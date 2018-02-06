@@ -694,6 +694,7 @@ cdef variant_type from_value(object v) except *:
 
 ################################################################################
 
+
 cdef dict to_dict(variant_map_type& d):
     """
     Converts a variant map type to a python dictionary.

@@ -7,6 +7,7 @@ from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
 import sys as _sys
+import six as _six
 from turicreate import config as _tc_config
 from turicreate.toolkits._main import ToolkitError as _ToolkitError
 from turicreate.toolkits._internal_utils import _numeric_param_check_range
@@ -62,11 +63,12 @@ def get_mxnet_context(max_devices=None):
             # extra attention to this message
             print()
             print('ERROR: Incomplete installation for leveraging GPUs for computations.')
-            print('Please make sure you have CUDA 8.0 installed and run the following line in')
+            print('Please make sure you have CUDA installed and run the following line in')
             print('your terminal and try again:')
             print()
-            print('    pip uninstall -y mxnet && pip install mxnet_cu80=={}'.format(_mx.__version__))
+            print('    pip uninstall -y mxnet && pip install mxnet-cu90=={}'.format(_mx.__version__))
             print()
+            print("Adjust 'cu90' depending on your CUDA version ('cu75' and 'cu80' are also available).")
             print('You can also disable GPU usage altogether by invoking turicreate.config.set_num_gpus(0)')
             _sys.exit(1)
         return ctx
@@ -81,7 +83,7 @@ def assert_valid_num_gpus():
     num_gpus = _tc_config.get_num_gpus()
     if _sys.platform == 'darwin' and num_gpus > 0:
         raise _ToolkitError('Using GPUs is currently not supported on Mac')
-    _numeric_param_check_range('num_gpus', num_gpus, -1, _sys.maxint)
+    _numeric_param_check_range('num_gpus', num_gpus, -1, _six.MAXSIZE)
 
 def load_mxnet_model_from_state(state, data, labels=None, existing_module=None, ctx = None):
     import mxnet as _mx

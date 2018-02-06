@@ -528,7 +528,7 @@ class SArray(object):
     @classmethod
     def read_json(cls, filename):
         """
-        Construct an SArray from a json file or glob of json files. 
+        Construct an SArray from a json file or glob of json files.
         The json file must contain a list of dictionaries. The returned
         SArray type will be of dict type
 
@@ -555,13 +555,13 @@ class SArray(object):
     @classmethod
     def where(cls, condition, istrue, isfalse, dtype=None):
         """
-        Selects elements from either istrue or isfalse depending on the value 
+        Selects elements from either istrue or isfalse depending on the value
         of the condition SArray.
 
         Parameters
         ----------
         condition : SArray
-        An SArray of values such that for each value, if non-zero, yields a 
+        An SArray of values such that for each value, if non-zero, yields a
         value from istrue, otherwise from isfalse.
 
         istrue : SArray or constant
@@ -578,8 +578,8 @@ class SArray(object):
 
         Examples
         --------
-        
-        Returns an SArray with the same values as g with values above 10 
+
+        Returns an SArray with the same values as g with values above 10
         clipped to 10
 
         >>> g = SArray([6,7,8,9,10,11,12,13])
@@ -588,7 +588,7 @@ class SArray(object):
         Rows: 8
         [6, 7, 8, 9, 10, 10, 10, 10]
 
-        Returns an SArray with the same values as g with values below 10 
+        Returns an SArray with the same values as g with values below 10
         clipped to 10
 
         >>> SArray.where(g > 10, g, 10)
@@ -797,7 +797,7 @@ class SArray(object):
     def shape(self):
         """
         The shape of the SArray, in a tuple. The first entry is the number of
-        rows. 
+        rows.
 
         Examples
         --------
@@ -814,7 +814,7 @@ class SArray(object):
         Conceptually equivalent to:
 
         >>> sa.apply(lambda x: item in x)
-        
+
         If the current SArray contains strings and item is a string. Produces a 1
         for each row if 'item' is a substring of the row and 0 otherwise.
 
@@ -832,7 +832,7 @@ class SArray(object):
         Returns
         -------
         out : SArray
-            A binary SArray where a non-zero value denotes that the item 
+            A binary SArray where a non-zero value denotes that the item
             was found in the row. And 0 if it is not found.
 
         Examples
@@ -852,7 +852,7 @@ class SArray(object):
 
         See Also
         --------
-        is_in 
+        is_in
         """
         return SArray(_proxy = self.__proxy__.left_scalar_operator(item, 'in'))
 
@@ -864,7 +864,7 @@ class SArray(object):
         Conceptually equivalent to:
 
         >>> sa.apply(lambda x: x in other)
-        
+
         If the current SArray contains strings and other is a string. Produces a 1
         for each row if the row is a substring of 'other', and 0 otherwise.
 
@@ -1969,7 +1969,7 @@ class SArray(object):
         Parameters
         ----------
         seed : int
-            Defaults to 0. Can be changed to different values to get 
+            Defaults to 0. Can be changed to different values to get
             different hash results.
 
         Returns
@@ -2423,7 +2423,7 @@ class SArray(object):
         out_of_range_values = [(val > 255 or val < 0) for x in range(num_test) for val in self[x]]
 
         if sum(mod_values) != 0.0 and not allow_rounding:
-            raise ValueError("There are non-integer values in the array data. Images only support integer data values between 0 and 255. To permit rounding, set the 'allow_rounding' paramter to 1.")
+            raise ValueError("There are non-integer values in the array data. Images only support integer data values between 0 and 255. To permit rounding, set the 'allow_rounding' parameter to 1.")
 
         if sum(out_of_range_values) != 0:
             raise ValueError("There are values outside the range of 0 to 255. Images only support integer data values between 0 and 255.")
@@ -2730,6 +2730,43 @@ class SArray(object):
 
         return Sketch(self, background, sub_sketch_keys = sub_sketch_keys)
 
+    def value_counts(self):
+        """
+        Return an SFrame containing counts of unique values. The resulting
+        SFrame will be sorted in descending frequency.
+
+        Returns
+        -------
+        out : SFrame
+            An SFrame containing 2 columns : 'value', and 'count'. The SFrame will
+            be sorted in descending order by the column 'count'.
+
+        See Also
+        --------
+        SFrame.summary
+
+        Examples
+        --------
+        >>> sa = turicreate.SArray([1,1,2,2,2,2,3,3,3,3,3,3,3])
+        >>> sa.value_counts()
+            Columns:
+                    value	int
+                    count	int
+            Rows: 3
+            Data:
+            +-------+-------+
+            | value | count |
+            +-------+-------+
+            |   3   |   7   |
+            |   2   |   4   |
+            |   1   |   2   |
+            +-------+-------+
+            [3 rows x 2 columns]
+        """
+        from .sframe import SFrame as _SFrame
+        return _SFrame({'value':self}).groupby('value', {'count':_aggregate.COUNT}).sort('count', ascending=False)
+
+
     def append(self, other):
         """
         Append an SArray to the current SArray. Creates a new SArray with the
@@ -2860,6 +2897,14 @@ class SArray(object):
         import os
         (tcviz_dir, _) = os.path.split(os.path.dirname(__file__))
         path_to_client = os.path.join(tcviz_dir, 'Turi Create Visualization.app', 'Contents', 'MacOS', 'Turi Create Visualization')
+
+        if title == "":
+            title = " "
+        if xlabel == "":
+            xlabel = " "
+        if ylabel == "":
+            ylabel = " "
+
         if title is None:
             title = "" # C++ otherwise gets "None" as std::string
         if xlabel is None:
@@ -3077,6 +3122,83 @@ class SArray(object):
         with cython_context():
            return _SFrame(_proxy=self.__proxy__.expand(column_name_prefix, limit, column_types))
 
+    def stack(self, new_column_name=None, drop_na=False, new_column_type=None):
+        """
+        Convert a "wide" SArray to one or two "tall" columns in an SFrame by
+        stacking all values.
+
+        The stack works only for columns of dict, list, or array type.  If the
+        column is dict type, two new columns are created as a result of
+        stacking: one column holds the key and another column holds the value.
+        The rest of the columns are repeated for each key/value pair.
+
+        If the column is array or list type, one new column is created as a
+        result of stacking. With each row holds one element of the array or list
+        value, and the rest columns from the same original row repeated.
+
+        The returned SFrame includes the newly created column(s).
+
+        Parameters
+        --------------
+        new_column_name : str | list of str, optional
+            The new column name(s). If original column is list/array type,
+            new_column_name must a string. If original column is dict type,
+            new_column_name must be a list of two strings. If not given, column
+            names are generated automatically.
+
+        drop_na : boolean, optional
+            If True, missing values and empty list/array/dict are all dropped
+            from the resulting column(s). If False, missing values are
+            maintained in stacked column(s).
+
+        new_column_type : type | list of types, optional
+            The new column types. If original column is a list/array type
+            new_column_type must be a single type, or a list of one type. If
+            original column is of dict type, new_column_type must be a list of
+            two types. If not provided, the types are automatically inferred
+            from the first 100 values of the SFrame.
+
+        Returns
+        -------
+        out : SFrame
+            A new SFrame that contains the newly stacked column(s).
+
+        Examples
+        ---------
+        Suppose 'sa' is an SArray of dict type:
+
+        >>> sa = turicreate.SArray([{'a':3, 'cat':2},
+        ...                         {'a':1, 'the':2},
+        ...                         {'the':1, 'dog':3},
+        ...                         {}])
+        [{'a': 3, 'cat': 2}, {'a': 1, 'the': 2}, {'the': 1, 'dog': 3}, {}]
+
+        Stack would stack all keys in one column and all values in another
+        column:
+
+        >>> sa.stack(new_column_name=['word', 'count'])
+        +------+-------+
+        | word | count |
+        +------+-------+
+        |  a   |   3   |
+        | cat  |   2   |
+        |  a   |   1   |
+        | the  |   2   |
+        | the  |   1   |
+        | dog  |   3   |
+        | None |  None |
+        +------+-------+
+        [7 rows x 2 columns]
+
+        Observe that since topic 4 had no words, an empty row is inserted.
+        To drop that row, set drop_na=True in the parameters to stack.
+        """
+        from .sframe import SFrame as _SFrame
+        return _SFrame({'SArray': self}).stack('SArray',
+                                               new_column_name=new_column_name,
+                                               drop_na=drop_na,
+                                               new_column_type=new_column_type)
+
     def unpack(self, column_name_prefix = "X", column_types=None, na_value=None, limit=None):
         """
         Convert an SArray of list, array, or dict type to an SFrame with
@@ -3213,7 +3335,7 @@ class SArray(object):
         if type(column_name_prefix) != str:
             raise TypeError("'column_name_prefix' must be a string")
 
-        # validdate 'limit'
+        # validate 'limit'
         if limit is not None:
             if (not _is_non_string_iterable(limit)):
                 raise TypeError("'limit' must be a list")
@@ -3932,7 +4054,7 @@ class SArray(object):
         Count the number of non-NULL values of different subsets over this
         SArray.
 
-        The subset that the count is excecuted on is defined as an inclusive
+        The subset that the count is executed on is defined as an inclusive
         range relative to the position to each value in the SArray, using
         `window_start` and `window_end`. For a better understanding of this,
         see the examples below.

@@ -21,7 +21,13 @@ overwritten on the next build. Make changes in the `src/` directory, and run bui
 Build Dependencies
 ------------------
 
-Turi Create automatically satisfies most dependencies in the `deps/` directory,
+You will need:
+
+* On macOS, [Xcode](https://itunes.apple.com/us/app/xcode/id497799835) with command line tools (tested with Xcode 9)
+* On Linux, a C++ compiler toolchain with C++11 support
+* [Node.js](https://nodejs.org) 6.x or later with `node` and `npm` in `$PATH`
+
+Turi Create automatically satisfies other dependencies in the `deps/` directory,
 which includes compiler support and dependent libraries.
 
 Compiling
@@ -34,8 +40,8 @@ be sure to install virtualenv using your system pip (conda pip is not supported)
 
     ./configure
 
-Running configure will create two sub-directories, release/ and
-debug/ . cd into src/unity under either of these directories and running make will build the
+Running configure will create two sub-directories, `release/` and
+`debug/` . cd into `src/unity` under either of these directories and running make will build the
 release or the debug versions respectively.
 
 We recommend using make’s parallel build feature to accelerate the compilation
@@ -44,10 +50,10 @@ process. For instance:
     cd debug/src/unity
     make -j 4
 
-will perform up to 4 build tasks in parallel. When building in release/ mode,
+will perform up to 4 build tasks in parallel. When building in release mode,
 Turi Create does require a large amount of memory to compile with the
 heaviest toolkit requiring 1GB of RAM. Where K is the amount of memory you
-have on your machine in GB, we recommend not exceeding make -j K
+have on your machine in GB, we recommend not exceeding `make -j K`
 
 To use your dev build export these environment variables:
 
@@ -72,6 +78,6 @@ From the repo root:
 
     cd debug/test
     make
-    ctest
+    ctest .
 
 

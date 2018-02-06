@@ -182,11 +182,12 @@ class ImageClassifier(_CustomModel):
         return state
 
     @classmethod
-    def _load_version(self, state, version):
+    def _load_version(cls, state, version):
         """
         A function to load a previously saved ImageClassifier
         instance.
         """
+        _tkutl._model_version_check(version, cls._PYTHON_IMAGE_CLASSIFIER_VERSION)
         from turicreate.toolkits.classifier.logistic_classifier import LogisticClassifier
         state['classifier'] = LogisticClassifier(state['classifier'])
         state['classes'] = state['classifier'].classes
@@ -495,18 +496,18 @@ class ImageClassifier(_CustomModel):
 
         probOutput = spec.description.output[0]
         classLabel = spec.description.output[1]
-        probOutput.type.dictionaryType.MergeFromString('')
+        probOutput.type.dictionaryType.MergeFromString(b'')
         if type(class_labels[0]) == int:
             nn_spec.ClearField('int64ClassLabels')
-            probOutput.type.dictionaryType.int64KeyType.MergeFromString('')
-            classLabel.type.int64Type.MergeFromString('')
+            probOutput.type.dictionaryType.int64KeyType.MergeFromString(b'')
+            classLabel.type.int64Type.MergeFromString(b'')
             del nn_spec.int64ClassLabels.vector[:]
             for c in class_labels:
                 nn_spec.int64ClassLabels.vector.append(c)
         else:
             nn_spec.ClearField('stringClassLabels')
-            probOutput.type.dictionaryType.stringKeyType.MergeFromString('')
-            classLabel.type.stringType.MergeFromString('')
+            probOutput.type.dictionaryType.stringKeyType.MergeFromString(b'')
+            classLabel.type.stringType.MergeFromString(b'')
             del nn_spec.stringClassLabels.vector[:]
             for c in class_labels:
                 nn_spec.stringClassLabels.vector.append(c)

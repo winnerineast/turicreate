@@ -22,6 +22,7 @@ from turicreate.toolkits._main import ToolkitError
 import turicreate.util.file_util as file_util
 import os
 from copy import copy as _copy
+import six as _six
 
 MODEL_NAME_MAP = {}
 
@@ -68,13 +69,22 @@ def load_model(location):
 
     _internal_url = _make_internal_url(location)
     saved_state = glconnect.get_unity().load_model(_internal_url)
-    if saved_state['archive_version'] == 1:
+    # The archive version could be both bytes/unicode
+    key = u'archive_version'
+    archive_version = saved_state[key] if key in saved_state else saved_state[key.encode()]
+    if archive_version < 0:
+        raise ToolkitError("File does not appear to be a Turi Create model.")
+    elif archive_version > 1:
+        raise ToolkitError("Unable to load model.\n\n"
+                           "This model looks to have been saved with a future version of Turi Create.\n"
+                           "Please upgrade Turi Create before attempting to load this model file.")
+    elif archive_version == 1:
         cls = MODEL_NAME_MAP[saved_state['model_name']]
         if 'model' in saved_state:
             # this is a native model
             return cls(saved_state['model'])
         else:
-            # this is a CustomModle
+            # this is a CustomModel
             model_data = saved_state['side_data']
             model_version = model_data['model_version']
             del model_data['model_version']
@@ -83,6 +93,12 @@ def load_model(location):
         # very legacy model format. Attempt pickle loading
         import sys
         sys.stderr.write("This model was saved in a legacy model format. Compatibility cannot be guaranteed in future versions.\n")
+        if _six.PY3:
+            raise ToolkitError("Unable to load legacy model in Python 3.\n\n"
+                               "To migrate a model, try loading it using Turi Create 4.0 or\n"
+                               "later in Python 2 and then re-save it. The re-saved model should\n"
+                               "work in Python 3.")
+
         if 'graphlab' not in sys.modules:
             sys.modules['graphlab'] = sys.modules['turicreate']
             # backward compatibility. Otherwise old pickles will not load
@@ -95,8 +111,8 @@ def load_model(location):
                     sys.modules[k.replace('turicreate', 'graphlab')] = v
         #legacy loader
         import pickle
-        model_wrapper = pickle.loads(saved_state['model_wrapper'])
-        return model_wrapper(saved_state['model_base'])
+        model_wrapper = pickle.loads(saved_state[b'model_wrapper'])
+        return model_wrapper(saved_state[b'model_base'])
 
 
 def _get_default_options_wrapper(unity_server_model_name,
@@ -323,6 +339,7 @@ class ExposeAttributesFromProxy(object):
         else:
             return object.__getattribute__(self, attr)
 
+@_six.add_metaclass(RegistrationMetaClass)
 class Model(ExposeAttributesFromProxy):
     """
     This class defines the minimal interface of a model object which is 
@@ -350,8 +367,6 @@ class Model(ExposeAttributesFromProxy):
         def _native_name(cls):
             return ["nearest_neighbors_ball_tree", "nearest_neighbors_brute_force", "nearest_neighbors_lsh"]
     """
-
-    __metaclass__ = RegistrationMetaClass
 
     def _name(self):
         """
@@ -461,6 +476,7 @@ class Model(ExposeAttributesFromProxy):
         return self.__repr__()
 
 
+@_six.add_metaclass(RegistrationMetaClass)
 class CustomModel(ExposeAttributesFromProxy):
     """
     This class is used to implement Python-only models. 
@@ -559,8 +575,6 @@ class CustomModel(ExposeAttributesFromProxy):
     >>> model.save('my_model_file')
     >>> loaded_model = tc.load_model('my_model_file')
     """
-
-    __metaclass__ = RegistrationMetaClass
 
     def __init__(self):
         pass

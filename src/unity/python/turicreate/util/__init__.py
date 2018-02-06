@@ -64,10 +64,6 @@ def _get_aws_credentials():
         environment variable. The second string of the tuple is the value of the
         AWS_SECRET_ACCESS_KEY environment variable.
 
-    See Also
-    --------
-    set_credentials
-
     Examples
     --------
     >>> turicreate.aws.get_credentials()
@@ -75,9 +71,9 @@ def _get_aws_credentials():
     """
 
     if (not 'AWS_ACCESS_KEY_ID' in _os.environ):
-        raise KeyError('No access key found. Please set the environment variable AWS_ACCESS_KEY_ID, or using turicreate.aws.set_credentials()')
+        raise KeyError('No access key found. Please set the environment variable AWS_ACCESS_KEY_ID.')
     if (not 'AWS_SECRET_ACCESS_KEY' in _os.environ):
-        raise KeyError('No secret key found. Please set the environment variable AWS_SECRET_ACCESS_KEY, or using turicreate.aws.set_credentials()')
+        raise KeyError('No secret key found. Please set the environment variable AWS_SECRET_ACCESS_KEY.')
     return (_os.environ['AWS_ACCESS_KEY_ID'], _os.environ['AWS_SECRET_ACCESS_KEY'])
 
 
@@ -148,7 +144,7 @@ def _make_internal_url(url):
     elif protocol == '':
         is_local = True
     elif (protocol == 'local' or protocol == 'remote'):
-        # local and remote are legacy protocol for seperate server process
+        # local and remote are legacy protocol for separate server process
         is_local = True
         # This code assumes local and remote are same machine
         url = _re.sub(protocol+'://','',url,count=1)
@@ -204,7 +200,7 @@ def _download_dataset(url_str, extract=True, force=False, output_dir="."):
 
 def is_directory_archive(path):
     """
-    Utiilty function that returns True if the path provided is a directory that has an SFrame or SGraph in it.
+    Utility function that returns True if the path provided is a directory that has an SFrame or SGraph in it.
 
     SFrames are written to disk as a directory archive, this function identifies if a given directory is an archive
     for an SFrame.

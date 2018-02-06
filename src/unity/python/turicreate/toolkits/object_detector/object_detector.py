@@ -9,11 +9,11 @@ Class definition and utilities for the object detection toolkit.
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
-import sys as _sys
 import time as _time
 import itertools as _itertools
 from datetime import datetime as _datetime
 
+import six as _six
 import turicreate as _tc
 import numpy as _np
 
@@ -149,7 +149,7 @@ def create(dataset, annotations=None, feature=None, model='darknet-yolo',
     if len(dataset) == 0:
         raise _ToolkitError('Unable to train on empty dataset')
 
-    _numeric_param_check_range('max_iterations', max_iterations, 0, _sys.maxint)
+    _numeric_param_check_range('max_iterations', max_iterations, 0, _six.MAXSIZE)
     start_time = _time.time()
 
     supported_detectors = ['darknet-yolo']
@@ -219,7 +219,7 @@ def create(dataset, annotations=None, feature=None, model='darknet-yolo',
         set_keys = set(params.keys()) 
         unsupported = new_keys - set_keys
         if unsupported:
-            raise _ToolkitError('Uknown advanced parameters: {}'.format(unsupported))
+            raise _ToolkitError('Unknown advanced parameters: {}'.format(unsupported))
 
         params.update(kwargs['_advanced_parameters'])
 
@@ -411,9 +411,8 @@ class ObjectDetector(_CustomModel):
 
     @classmethod
     def _load_version(cls, state, version):
+        _tkutl._model_version_check(version, cls._PYTHON_OBJECT_DETECTOR_VERSION)
         from ._model import tiny_darknet as _tiny_darknet
-        if (version > cls._PYTHON_OBJECT_DETECTOR_VERSION):
-            raise RuntimeError("Corrupted model. Cannot load a model with this version.")
 
         num_anchors = len(state['anchors'])
         num_classes = state['num_classes']
@@ -472,7 +471,7 @@ class ObjectDetector(_CustomModel):
         model_fields = [
             ('Model', 'model'),
             ('Number of classes', 'num_classes'),
-            ('Non-maximum supression threshold', 'non_maximum_suppression_threshold'),
+            ('Non-maximum suppression threshold', 'non_maximum_suppression_threshold'),
             ('Input image shape', 'input_image_shape'),
         ]
         training_fields = [
@@ -889,7 +888,7 @@ class ObjectDetector(_CustomModel):
         input_names = [self.feature]
         input_dims = [list(self.input_image_shape)]
         input_types = [datatypes.Array(*dim) for dim in input_dims]
-        input_features = zip(input_names, input_types)
+        input_features = list(zip(input_names, input_types))
 
         num_spatial = self._grid_shape[0] * self._grid_shape[1]
         output_names = [
@@ -901,7 +900,7 @@ class ObjectDetector(_CustomModel):
             (num_anchors * num_spatial, 4),
         ]
         output_types = [datatypes.Array(*dim) for dim in output_dims]
-        output_features = zip(output_names, output_types)
+        output_features = list(zip(output_names, output_types))
         mode = None
         builder = neural_network.NeuralNetworkBuilder(input_features, output_features, mode)
         _mxnet_converter.convert(mod, mode=None,

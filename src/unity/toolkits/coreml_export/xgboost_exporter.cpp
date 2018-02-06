@@ -54,16 +54,21 @@ static double hexadecimal_to_float(std::string hex) {
         for(int i = 0; i < 4; ++i) {
         p[i] = val[2*i] + 16 * val[2+i + 1];
         }
-  */
-  if (is_little_endian) {
-    sscanf(hex.c_str(), "%02X%02X%02X%02X", &(p[0]), &(p[1]), &(p[2]), &(p[3]));
+  */ 
+  { 
+    int a = 0, b = 0, c = 0, d = 0;
 
-    //std::istringstream(hex) >> std::hex >> p[3] >> p[2] >> p[1] >> p[0];
-  } else {
-    //std::istringstream(hex) >> std::hex >> p[0] >> p[1] >> p[2] >> p[3];
-    sscanf(hex.c_str(), "%02X%02X%02X%02X", &(p[3]), &(p[2]), &(p[1]), &(p[0]));
+    if (is_little_endian) {
+      sscanf(hex.c_str(), "%02X%02X%02X%02X", &a, &b, &c, &d);
+    } else {
+      sscanf(hex.c_str(), "%02X%02X%02X%02X", &d, &c, &b, &a);
+    }
+
+    p[0] = static_cast<uint8_t>(a);  DASSERT_EQ(static_cast<int>(p[0]), a);
+    p[1] = static_cast<uint8_t>(b);  DASSERT_EQ(static_cast<int>(p[1]), b);
+    p[2] = static_cast<uint8_t>(c);  DASSERT_EQ(static_cast<int>(p[2]), c);
+    p[3] = static_cast<uint8_t>(d);  DASSERT_EQ(static_cast<int>(p[3]), d);
   }
-
   // DASSERT_EQ(out, hex.size());
 
 #ifndef NDEBUG
@@ -98,7 +103,7 @@ void export_xgboost_model(const std::string& filename,
   std::map<size_t, size_t> dict_indices;
   for (size_t c = 0; c < metadata->num_columns(); c++) {
     if (metadata->column_type(c) == flex_type_enum::DICT) {
-      for (size_t i = 0; i < metadata->column_size(c); i++) {
+      for (size_t i = 0; i < metadata->index_size(c); i++) {
           dict_indices[metadata->global_index_offset(c) + i] = 1;
       }
     }
@@ -168,7 +173,7 @@ void export_xgboost_model(const std::string& filename,
     } else if(metadata->target_column_type() == flex_type_enum::INTEGER) {
       std::vector<int64_t> classes(num_classes);
       for(size_t i = 0; i < num_classes; ++i) {
-        classes[i] = ti->map_index_to_value(i).get<flex_int>();
+        classes[i] = ti->map_index_to_value(i).to<flex_int>();
       }
       tc->setOutputClassList(classes);
       target_output_data_type = CoreML::FeatureType::Int64();
@@ -192,7 +197,7 @@ void export_xgboost_model(const std::string& filename,
       std::map<flex_string, flexible_type> node_dict(node_dict_raw.begin(), node_dict_raw.end());
       flex_int node_id = node_dict.at("id").get<flex_int>();
       flex_string type = node_dict.at("type").get<flex_string>();
-      flex_float value = node_dict.at("value").get<flex_float>();
+      flex_float value = node_dict.at("value").to<flex_float>();
 
       // Get the exact non-lossy double value and use that.  But it's stored as an
       flex_float exact_value = hexadecimal_to_float(node_dict.at("value_hexadecimal").get<flex_string>());

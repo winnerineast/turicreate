@@ -183,7 +183,7 @@ def _toolkit_get_topk_bottomk(values, k=5):
     ----------
     values : SFrame of model coefficients
 
-    k: Maximum number of largest postive and k lowest negative numbers to return
+    k: Maximum number of largest positive and k lowest negative numbers to return
 
     Returns
     -------
@@ -528,10 +528,24 @@ def _validate_row_label(dataset, label=None, default_label='__id'):
     ## Return the modified dataset and label
     return dataset, label
 
+def _model_version_check(file_version, code_version):
+    """
+    Checks if a saved model file with version (file_version)
+    is compatible with the current code version (code_version).
+    Throws an exception telling the user to upgrade.
+    """
+    if (file_version > code_version):
+        raise RuntimeError("Failed to load model file.\n\n"
+           "The model that you are trying to load was saved with a newer version of\n"
+           "Turi Create than what you have. Please upgrade before attempting to load\n"
+           "the file again:\n"
+           "\n"
+           "    pip install -U turicreate\n")
+
 def _mac_ver():
     """
     Returns Mac version as a tuple of integers, making it easy to do proper
-    version comparisons. On non-Macs, it returns None.
+    version comparisons. On non-Macs, it returns an empty tuple.
     """
     import platform
     import sys
@@ -539,4 +553,4 @@ def _mac_ver():
         ver_str = platform.mac_ver()[0]
         return tuple([int(v) for v in ver_str.split('.')])
     else:
-        return None
+        return ()

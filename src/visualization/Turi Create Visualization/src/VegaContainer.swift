@@ -2,10 +2,8 @@
 //
 //  Use of this source code is governed by a BSD-3-clause license that can
 //  be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
-import Foundation
-import Cocoa
+
 import WebKit
-import CoreImage
 
 func log(_ message: String) {
     let withNewline = String(format: "%@\n", message)
@@ -157,12 +155,26 @@ class VegaContainer: NSObject, WKScriptMessageHandler {
     public func set_table(table_spec: [String: Any]) {
         self.data_spec.removeAll()
         self.table_spec = table_spec
+        
+        DispatchQueue.main.async {
+            SharedData.shared.save_image?.isHidden = true
+            SharedData.shared.save_vega?.isHidden = true
+            SharedData.shared.print_vega?.isHidden = true
+            SharedData.shared.page_setup?.isHidden = true
+        }
     }
     
     public func set_vega(vega_spec: [String: Any]) {
         // TODO: write function to check valid vega spec
         self.data_spec.removeAll()
         self.vega_spec = vega_spec
+        
+        DispatchQueue.main.async {
+            SharedData.shared.save_image?.isHidden = false
+            SharedData.shared.save_vega?.isHidden = false
+            SharedData.shared.print_vega?.isHidden = false
+            SharedData.shared.page_setup?.isHidden = false
+        }
     }
     
     public func add_data(data_spec: [String: Any]) {
@@ -186,7 +198,7 @@ class VegaContainer: NSObject, WKScriptMessageHandler {
             if result == NSFileHandlingPanelOKButton {
                 let exportedFileURL = savePanel.url?.appendingPathExtension("csv")
                 
-                let jsString = String(format: "getData();");
+                let jsString = "getData();";
                 
                 self.view.evaluateJavaScript(jsString, completionHandler: { (value , err) in
                     
@@ -221,13 +233,14 @@ class VegaContainer: NSObject, WKScriptMessageHandler {
         
         // open save panel
         let savePanel = NSSavePanel()
+        savePanel.allowedFileTypes = ["json"];
         
         // start the saving of the json
         savePanel.begin { (result: Int) -> Void in
             if result == NSFileHandlingPanelOKButton {
-                let exportedFileURL = savePanel.url?.appendingPathExtension("json")
+                let exportedFileURL = savePanel.url
                 
-                let jsString = String(format: "getSpec();");
+                let jsString = "getSpec();";
                 
                 self.view.evaluateJavaScript(jsString, completionHandler: { (value , err) in
                     
@@ -250,12 +263,13 @@ class VegaContainer: NSObject, WKScriptMessageHandler {
         
         // open save panel
         let savePanel = NSSavePanel()
+        savePanel.allowedFileTypes = ["png"];
         
         // start the saving of the image
         savePanel.begin { (result: Int) -> Void in
             if result == NSFileHandlingPanelOKButton {
-                let exportedFileURL = savePanel.url?.appendingPathExtension("png")
-                let jsString = String(format: "export_png();");
+                let exportedFileURL = savePanel.url
+                let jsString = "export_png();";
                 
                 // call function to get images
                 self.view.evaluateJavaScript(jsString, completionHandler: { (value , err) in
@@ -270,6 +284,22 @@ class VegaContainer: NSObject, WKScriptMessageHandler {
                 });
             }
         }
+    }
+    
+    public func get_image(completion: @escaping (NSImage) -> Void) {
+        let jsString = "export_png();";
+        self.view.evaluateJavaScript(jsString, completionHandler: { (value , err) in
+            
+            if(err != nil){
+                return
+            }
+            
+            let s = String(describing: value!)
+            let dataDecoded = Data(base64Encoded: s, options: Data.Base64DecodingOptions(rawValue: NSData.Base64DecodingOptions.RawValue(0)))!
+            let image = NSImage(data: dataDecoded)
+            
+            completion(image!);
+        });
     }
 
     

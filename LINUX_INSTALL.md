@@ -140,7 +140,7 @@ We will need to get a newer libstdc++ from a package in the Nux Dextop repo.
 
 ```shell
 wget ftp://ftp.pbone.net/mirror/li.nux.ro/download/nux/dextop/el6/x86_64/chrome-deps-stable-3.11-1.x86_64.rpm
-sudo rpm -i --badreloc --noscripts --relocate /opt/google/chrome=$HOME chrome-deps-stable-3.11-1.x86_64.rp
+sudo rpm -i --badreloc --noscripts --relocate /opt/google/chrome=$HOME chrome-deps-stable-3.11-1.x86_64.rpm
 ```
 
 This will install libstdc++.so into $HOME/lib. 
@@ -192,9 +192,21 @@ sudo yum install -y centos-release-SCL
 sudo yum install -y python27
 ```
 
-Alternatively, iIf you compile Python 2.7 from source, you *must* configure
-with --enable-unicode=ucs4, and we recommend --with-suffix=2.7 to avoid name
+Alternatively, if you compile Python 2.7 from source, you *must* configure
+with `--enable-unicode=ucs4` and `--enable-shared`, and we recommend --with-suffix=2.7 to avoid name
 collisions.
+
+To check if your Python has the correct unicode version:
+```python
+# When built with --enable-unicode=ucs4:
+>>> import sys
+>>> print sys.maxunicode
+1114111
+# When built with --enable-unicode=ucs2:
+>>> import sys
+>>> print sys.maxunicode
+65535
+```
 
 #### Obtain a recent libstdc++
 

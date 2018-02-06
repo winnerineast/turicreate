@@ -166,6 +166,15 @@ def _get_global_dbapi_info(dbapi_module, conn):
 
     return ret_dict
 
+def _convert_rows_to_builtin_seq(data):
+    # Flexible type expects a builtin type (like list or tuple) for conversion.
+    # Some DBAPI modules abstract rows as classes that act as single sequences
+    # and this allows these to work with flexible type. list is chosen to allow
+    # mutation in case we need to force cast any entries
+    if len(data) > 0 and type(data[0]) != list:
+        data = [list(row) for row in data]
+    return data
+
 # Expects list of tuples
 def _force_cast_sql_types(data, result_types, force_cast_cols):
     if len(force_cast_cols) == 0:
@@ -173,7 +182,6 @@ def _force_cast_sql_types(data, result_types, force_cast_cols):
 
     ret_data = []
     for row in data:
-        row = list(row)
         for idx in force_cast_cols:
             if row[idx] is not None and result_types[idx] != datetime.datetime:
                 row[idx] = result_types[idx](row[idx])
@@ -283,10 +291,7 @@ class SFrame(object):
 
     Construct an SFrame from a csv file on Amazon S3. This requires the
     environment variables: *AWS_ACCESS_KEY_ID* and *AWS_SECRET_ACCESS_KEY* to be
-    set before the python session started. Alternatively, you can use
-    :py:func:`turicreate.aws.set_credentials()` to set the credentials after
-    python is started and :py:func:`turicreate.aws.get_credentials()` to verify
-    these environment variables.
+    set before the python session started.
 
     >>> sf = SFrame(data='s3://mybucket/foo.csv')
 
@@ -493,7 +498,7 @@ class SFrame(object):
     >>> !cat interesting_dicts.csv
     dict
     {"classic":1,"dict":1}
-    {space:1 seperated:1}
+    {space:1 separated:1}
     {emptyvalue:}
     {}
     {:}
@@ -508,7 +513,7 @@ class SFrame(object):
     |             dict             |
     +------------------------------+
     |  {'dict': 1, 'classic': 1}   |
-    | {'seperated': 1, 'space': 1} |
+    | {'separated': 1, 'space': 1} |
     |     {'emptyvalue': None}     |
     |              {}              |
     |         {None: None}         |
@@ -880,7 +885,7 @@ class SFrame(object):
                   column_type_hints[j] = currow[j]
             else:
               column_type_hints[j] = str
-        # final pass. everything whih is still NoneType is now a str
+        # final pass. everything which is still NoneType is now a str
         for i in range(len(column_type_hints)):
           if column_type_hints[i] == type(None):
             column_type_hints[i] = str
@@ -1813,9 +1818,11 @@ class SFrame(object):
                 result_types[i] = str
             sb = SFrameBuilder(result_types, column_names=result_names)
 
+        temp_vals = _convert_rows_to_builtin_seq(temp_vals)
         sb.append_multiple(_force_cast_sql_types(temp_vals, result_types, cols_to_force_cast))
         rows = c.fetchmany()
         while len(rows) > 0:
+            rows = _convert_rows_to_builtin_seq(rows)
             sb.append_multiple(_force_cast_sql_types(rows, result_types, cols_to_force_cast))
             rows = c.fetchmany()
         cls = sb.close()
@@ -3033,7 +3040,7 @@ class SFrame(object):
         """
         Selects all columns where the name of the column or the type of column
         is included in the column_names. An exception is raised if duplicate columns
-        are selected i.e. sf.select_columns(['a','a']), or non-existant columns
+        are selected i.e. sf.select_columns(['a','a']), or non-existent columns
         are selected.
 
         Throws an exception for all other input types.
@@ -3148,7 +3155,7 @@ class SFrame(object):
         --------
         >>> sf = turicreate.SFrame({'id': [1, 2, 3], 'val': ['A', 'B', 'C']})
         >>> sa = turicreate.SArray(['cat', 'dog', 'fossa'])
-        >>> # This line is equivalant to `sf['species'] = sa`
+        >>> # This line is equivalent to `sf['species'] = sa`
         >>> res = sf.add_column(sa, 'species')
         >>> res
         +----+-----+---------+
@@ -4934,8 +4941,8 @@ class SFrame(object):
         result of stacking. With each row holds one element of the array or list
         value, and the rest columns from the same original row repeated.
 
-        The new SFrame includes the newly created column and all columns other
-        than the one that is stacked.
+        The returned SFrame includes the newly created column(s) and all
+        columns other than the one that is stacked.
 
         Parameters
         --------------
@@ -5008,7 +5015,7 @@ class SFrame(object):
         [7 rows x 3 columns]
 
         Observe that since topic 4 had no words, an empty row is inserted.
-        To drop that row, set dropna=True in the parameters to stack.
+        To drop that row, set drop_na=True in the parameters to stack.
 
         Suppose 'sf' is an SFrame that contains a user and his/her friends,
         where 'friends' columns is an array type. Stack on 'friends' column

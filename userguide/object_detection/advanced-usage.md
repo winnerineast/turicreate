@@ -6,7 +6,7 @@ your detector to an iOS or macOS app using Core ML.
 #### Evaluation {#evaluation}
 
 If you hold out ground truth data before model creation, you can use it for
-quantiative model evaluation. You can do this by splitting your ground truth
+quantitative model evaluation. You can do this by splitting your ground truth
 data:
 
 ```python
@@ -185,6 +185,11 @@ you and your user experience and corresponds to the `confidence_threshold`
 parameter in `predict` inside Turi Create:
 
 ```swift
+let results = request.results as! [VNCoreMLFeatureValueObservation]
+
+let coordinates = results[0].featureValue.multiArrayValue!
+let confidence = results[1].featureValue.multiArrayValue!
+
 let confidenceThreshold = 0.25
 var unorderedPredictions = [Prediction]()
 let numBoundingBoxes = confidence.shape[0].intValue

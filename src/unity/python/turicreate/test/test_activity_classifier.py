@@ -135,9 +135,9 @@ class ActivityClassifierTest(unittest.TestCase):
             'batch_size' : lambda x: x == self.def_opts['batch_size'],
             'classes': lambda x: sorted(x) == sorted(self.data[self.target].unique())
         }
-        self.exposed_fields_ans = self.get_ans.keys()
+        self.exposed_fields_ans = list(self.get_ans.keys())
         self.fields_ans = self.exposed_fields_ans + ['_recalibrated_batch_size',
-                '_loss_model', '_pred_model', '_id_target_map',
+                '_pred_model', '_id_target_map',
                 '_predictions_in_chunk', '_target_id_map']
 
 
@@ -184,7 +184,7 @@ class ActivityClassifierTest(unittest.TestCase):
 
         if _mac_ver() >= (10, 13):
             w = self.prediction_window
-            labels = map(str, sorted(self.model._target_id_map.keys()))
+            labels = list(map(str, sorted(self.model._target_id_map.keys())))
 
             data_list = [dataset[f].to_numpy()[:, np.newaxis] for f in self.features]
             np_data = np.concatenate(data_list, 1)[np.newaxis]
@@ -287,7 +287,7 @@ class ActivityClassifierTest(unittest.TestCase):
                     pass
                 except Exception as e:
                     self.assertTrue(False, "After model save and load, method " + test_method +
-                                    " has failed with error: " + e.message)
+                                    " has failed with error: " + str(e))
 
 
 @unittest.skipIf(tc.util._num_available_gpus() == 0, 'Requires GPU')
