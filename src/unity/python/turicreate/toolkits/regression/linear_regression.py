@@ -341,7 +341,6 @@ class LinearRegression(_SupervisedLearningModel):
 
     """
     def __init__(self, model_proxy):
-        '''__init__(self)'''
         self.__proxy__ = model_proxy
         self.__name__ = self.__class__._native_name()
 
@@ -444,7 +443,11 @@ class LinearRegression(_SupervisedLearningModel):
         short_description = _coreml_utils._mlmodel_short_description(display_name)
         context = {"class": self.__class__.__name__,
                    "version": _turicreate.__version__,
-                   "short_description": short_description}
+                   "short_description": short_description,
+                   'user_defined':{
+                    'turicreate_version': _turicreate.__version__
+                   }
+                  }
         _linear_regression_export_as_model_asset(self.__proxy__, filename, context)
 
     def _get(self, field):
@@ -560,7 +563,7 @@ class LinearRegression(_SupervisedLearningModel):
 
         return super(LinearRegression, self).predict(dataset, missing_value_action=missing_value_action)
 
-    
+
     def evaluate(self, dataset, metric='auto', missing_value_action='auto'):
         r"""Evaluate the model by making target value predictions and comparing
         to actual values.

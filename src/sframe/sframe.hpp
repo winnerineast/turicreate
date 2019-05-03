@@ -360,7 +360,9 @@ class sframe : public swriter_base<sframe_output_iterator> {
    * column id is out of range.
    */
   inline std::string column_name(size_t i) const {
-    ASSERT_MSG(i < index_info.column_names.size(), "Index out of range!");
+    if(i >= index_info.column_names.size()) {
+      log_and_throw("Column index out of range!");
+    }
 
     return index_info.column_names[i];
   }
@@ -371,11 +373,15 @@ class sframe : public swriter_base<sframe_output_iterator> {
    */
   inline flex_type_enum column_type(size_t i) const {
     if (writing) {
-      ASSERT_MSG(i < group_writer->get_index_info().columns.size(), "Index out of range!");
+      if(i >= group_writer->get_index_info().columns.size()) {
+        log_and_throw("Column index out of range!");
+      }
       return (flex_type_enum)
           (atoi(group_writer->get_index_info().columns[i].metadata["__type__"].c_str()));
     } else {
-      ASSERT_MSG(i < columns.size(), "Index out of range!");
+      if(i >= columns.size()) {
+        log_and_throw("Column index out of range!");
+      }
       return columns[i]->get_type();
     }
   }
@@ -662,6 +668,12 @@ class sframe : public swriter_base<sframe_output_iterator> {
   void save(oarchive& oarc) const;
 
    
+  /**
+   * Attempts to compact if the number of segments in the SArray 
+   * exceeds SFRAME_COMPACTION_THRESHOLD.
+   */
+  void try_compact();
+
   /** 
    * SFrame deserializer. iarc must be associated with a directory.
    * Loads from the next prefix inside the directory.

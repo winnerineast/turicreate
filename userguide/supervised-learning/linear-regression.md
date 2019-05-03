@@ -88,13 +88,13 @@ module. This includes regularization, evaluation options, model interpretation,
 and missing value handling.  Note that **logistic regression and support vector
 machines (SVM)** conform to **almost** all of the API discussed below.
 
-######  <a name="linregr-model-access"></a> Accessing attributes of the model
+######  <a name="accessing-attributes-of-the-model"></a>Accessing attributes of the model
 
 The attributes of all Turi Create models, which include training statistics, model
 hyper-parameters, and model results can be accessed in the same way as python
 dictionaries.
 
-###### <a name="linregr-interpreting-results"></a> Interpreting results
+###### <a name="interpreting-results"></a>Interpreting results 
 
 Linear regression can provide valuable insight about the relationships between
 the target and feature columns in your data, revealing why your model returns
@@ -115,8 +115,8 @@ shows the largest positive and negative coefficients. After a model is
 created, we can access the coefficients as follows:
 
 ```python
-coefs = model['coefficients']
-print coefs
+coefs = model.coefficients
+print(coefs)
 ```
 ```no-highlight
 +-----------------------+-------+-------------------+-------------------+
@@ -136,7 +136,7 @@ categorical features, lists, and dictionaries. In the SFrame above, there is an
 extra column for `standard errors` on the estimated coefficients (see section
 below for a more detailed explanation).
 
-###### <a name="linregr-stderr"></a> Standard-errors
+###### <a name="standard-errors"></a> Standard-errors
 
 The standard error is the empirical standard deviation on the estimated
 coefficient. For example, a coefficient of 1 with a standard error of 0.5
@@ -152,7 +152,7 @@ coefficients. If standard errors cannot be estimated, a column of `None` values
 are returned.
 
 
-######  <a name="linregr-categorical-features"></a> Categorical features
+######  <a name="categorical-features"></a>Categorical features 
 
 Categorical variables are features that can take one of a limited, and usually
 fixed, number of possible values. Each category is referred to as a level. As an
@@ -199,16 +199,16 @@ model = tc.linear_regression.create(train_data, target='stars',
                                                 'city'])
 
 # Number of feature columns
-print "Number of features          : %s" % model['num_features']
+print("Number of features          : %s" % model['num_features'])
 
 # Number of features (including expanded lists and dictionaries)
-print "Number of unpacked features : %s" % model['num_unpacked_features']
+print("Number of unpacked features : %s" % model['num_unpacked_features'])
 
 # Number of coefficients in the model
-print "Number of coefficients      : %s" % model['num_coefficients']
+print("Number of coefficients      : %s" % model['num_coefficients'])
 
 # A coefficient is included for each category
-print model['coefficients']
+print(model['coefficients'])
 ```
 ```no-highlight
 Number of features          : 5
@@ -238,7 +238,7 @@ You can use print_rows(num_rows=m, num_columns=n) to print more rows and columns
 ```
 
 
-######  <a name="linregr-sparse-features"></a> Sparse features
+######  <a name="sparse-features"></a> Sparse features
 
 Sparsity is one of the most important things to consider when working with
 a lot of data. Sparse features are encoded using a dictionary where the keys
@@ -263,7 +263,9 @@ that all tags **not explicitly provided are treated as features with value
 zero**. We illustrate with the following example:
 
 ```python
-print train_data['categories_dict'].head(3)
+print(train_data['categories_dict'].head(3))
+```
+```no-highlight
 [{'Breakfast & Brunch': 1, 'Restaurants': 1},
  {'Restaurants': 1, 'Pizza': 1, 'Italian': 1},
  {'Dog Parks': 1, 'Parks': 1, 'Active Life': 1}]
@@ -286,16 +288,16 @@ model = tc.linear_regression.create(train_data, target='stars',
                                                 'categories_dict'])
 
 # Number of feature columns
-print "Number of features          : %s" % model['num_features']
+print("Number of features          : %s" % model['num_features'])
 
 # Number of features (including expanded lists and dictionaries)
-print "Number of unpacked features : %s" % model['num_unpacked_features']
+print("Number of unpacked features : %s" % model['num_unpacked_features'])
 
 # Number of coefficients in the model
-print "Number of coefficients      : %s" % model['num_coefficients']
+print("Number of coefficients      : %s" % model['num_coefficients'])
 
 # A coefficient is included for each key in the dictionary
-print model['coefficients']
+print(model['coefficients'])
 ```
 ```no-highlight
 Number of features          : 5
@@ -322,7 +324,7 @@ Note: Only the head of the SFrame is printed.
 You can use print_rows(num_rows=m, num_columns=n) to print more rows and columns.
 ```
 
-######  <a name="linregr-list-features"></a> List features
+######  <a name="list-features"> </a> List features
 
 Turi Create can also handle list of numerical values as features without
 preprocessing. The following illustration shows that the numeric-list feature
@@ -342,7 +344,9 @@ from array import array
 
 # List of features
 train_data['votes_list'] = train_data['votes'].apply(lambda x: x.values())
-print train_data['votes_list'].head(3)
+print(train_data['votes_list'].head(3))
+```
+```no-highlight
 [array('d', [0.0, 5.0, 2.0]),
  array('d', [0.0, 0.0, 0.0]),
  array('d', [0.0, 2.0, 1.0])]
@@ -363,16 +367,16 @@ model = tc.linear_regression.create(train_data, target='stars',
 
 
 # Number of feature columns
-print "Number of features          : %s" % model['num_features']
+print("Number of features          : %s" % model['num_features'])
 
 # Number of features (including expanded lists and dictionaries)
-print "Number of unpacked features : %s" % model['num_unpacked_features']
+print("Number of unpacked features : %s" % model['num_unpacked_features'])
 
 # Number of coefficients in the model
-print "Number of coefficients      : %s" % model['num_coefficients']
+print("Number of coefficients      : %s" % model['num_coefficients'])
 
 # A coefficient is included for each index in the list
-print model['coefficients']
+print(model['coefficients'])
 ```
 ```no-highlight
 Number of features          : 5
@@ -394,7 +398,7 @@ Number of coefficients      : 8
 [8 rows x 3 columns]
 ```
 
-######  <a name="linregr-feature-rescaling"></a> Feature rescaling
+######  <a name="feature-rescaling"> </a>Feature rescaling
 
 Feature rescaling is the process of scaling individual features to be of the
 same scale. This process is particularly useful when features vary widely in
@@ -418,7 +422,7 @@ model = tc.linear_regression.create(train_data, target='stars',
 ```
 
 
-######  <a name="linregr-solver"></a> Choosing the solver
+######  <a name="choosing-the-solver"> </a>Choosing the solver
 
 The optimization used to create the model is automatically picked based on the input data from a carefully engineered collection
 of methods. The newton
@@ -539,7 +543,7 @@ new_data = tc.SFrame({'user_avg_stars': [None],
                        'categories_dict': [{'Pizza': 1}]
                       })
 prediction = model.predict(new_data)
-print prediction
+print(prediction)
 
 # An SFrame without the 'user_avg_stars' feature. predict() will impute the
 # entire feature to the mean value observed during training.
@@ -552,7 +556,7 @@ new_data = tc.SFrame({'business_avg_stars': [30.0],
 prediction = model.predict(new_data)
 ```
 
-######  <a name="linregr-regularizer"></a> Regularizing Models (Lasso, Ridge, and Elastic Net regression)
+######  <a name="regularizing-models"></a> Regularizing Models (Lasso, Ridge, and Elastic Net regression)
 
 Regularization is the process of using problem structure to solve ill-posed
 problems or to prevent overfitting. The structure is imposed by adding a penalty

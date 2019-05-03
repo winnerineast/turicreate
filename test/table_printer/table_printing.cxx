@@ -23,7 +23,7 @@ struct test_table_printer  {
   void test_table() {
     size_t num_columns = 4;
 
-    sframe sf = make_random_sframe(100, "cnsb");
+    sframe sf = make_random_sframe(100, "znsb");
 
     std::vector<std::vector<flexible_type> > values = testing_extract_sframe_data(sf);
 
@@ -52,7 +52,7 @@ struct test_table_printer  {
 
       for(size_t i = 0; i < saved_values.size(); ++i) {
 
-        size_t table_idx = i * interval;
+        TURI_ATTRIBUTE_UNUSED_NDEBUG size_t table_idx = i * interval;
 
         DASSERT_TRUE(saved_values[i][0].get_type() == flex_type_enum::INTEGER);
         DASSERT_TRUE(saved_values[i][0] == table_idx);

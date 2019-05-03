@@ -1,12 +1,14 @@
 #!/bin/bash
+
+# Exit immediately on failure of a subcommand
+set -e
+
 ##=============================================================================
 ## Main configuration processing
 RELEASE_DIR=release
 DEBUG_DIR=debug
 TURI_HOME=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 DEPS_PREFIX=$PWD/deps/local
-
-set -e
 
 function print_help {
   echo "Configures the build with the specified toolchain. "
@@ -19,22 +21,39 @@ function print_help {
   echo "  --cleanup                         Clean up everything."
   echo
   echo "  --install-python-toolchain        Install python in local virtualenv."
-  echo  
+  echo
   echo "  --with-system-cmake (default)     Use system cmake, if avaliable."
   echo "  --no-system-cmake "
-  echo 
+  echo
   echo "  --with-ccache (default)           Use ccache, if available."
   echo "  --no-ccache "
-  echo  
+  echo
+  echo "  --with-capi (default)             Build C API."
+  echo "  --with-capi-framework             Build C API as macOS framework (macOS only)"
+  echo "  --no-capi                         Skip building the C API."
+  echo
   echo "  --with-python (default)           Build python components."
   echo "  --no-python"
-  echo 
+  echo
   echo "  --with-visualization (default)    Build Turi Create visualization client."
   echo "  --no-visualization"
   echo
-  echo "  --python3                         Use Python 3.4, default is Python 2.7."
-  echo "  --python3.5                       Use Python 3.5, default is Python 2.7."
-  echo 
+  echo "  --with-extra-opt-flags (default)  Enable extra optimization flags (e.g. inlining)."
+  echo "  --no-extra-opt-flags"
+  echo
+  echo "  --with-stack-display              Display stack traces to stderr when possible."
+  echo "  --no-stack-display (default)      Only write stack traces to file, not to stderr."
+  echo "  --llvm-path                       Path to LLVM (required for stack trace display)."
+  echo
+  echo "  --release-opt-for-size            Optimize for size."
+  echo "  --debug-opt-for-size              Debug optimize for size."
+  echo "  --target-ios                      Build for iOS (macOS only)"
+  echo
+  echo "  --with-remotefs (default)         Include capabilities for remote file access."
+  echo "  --no-remotefs                     Disable remote file access."
+  echo
+  echo "  --virtualenv VIRTUALENV_EXE       Path to virtualenv executable (otherwise looks in \$PATH)."
+  echo
   echo "  --yes                             Defaults to yes on a prompt"
   echo
   echo "  -D var=value                      Specify CFLAGS definitions to be passed on to cmake."
@@ -44,7 +63,6 @@ function print_help {
   echo "Cleanup all build directories"
   echo "Example: ./configure --cleanup"
   echo
-  echo "All remaining options will be forwarded to cmake."
   exit 1
 } # end of print help
 
@@ -78,13 +96,14 @@ function run_cleanup_prompt {
   fi
 }
 
-function install_python_toolchain { 
-  
+function install_python_toolchain {
+
   echo "Installing python toolchain."
-  echo "python version = $PYTHON_VERSION."
+  # TODO - validate that $VIRTUALENV is set, and/or set it if not
+  echo "Using virtualenv at $VIRTUALENV."
 
   pushd ${TURI_HOME}
-  PYTHON_VERSION=${PYTHON_VERSION} ./scripts/install_python_toolchain.sh
+  VIRTUALENV=${VIRTUALENV} ./scripts/install_python_toolchain.sh
   popd
 }
 
@@ -98,11 +117,18 @@ with_python=1
 with_system_cmake=1
 with_ccache=1
 
+with_capi=1
+with_capi_framework=0
+with_ios=0
 with_ccache=1
 with_visualization=1
+with_remotefs=1
+with_extra_opt_flags=1
+with_stack_display=0
+release_opt_for_size=0
+debug_opt_for_size=0
 
-python3=0
-python35=0
+llvm_path=""
 
 ###############################################################################
 #
@@ -111,29 +137,46 @@ python35=0
 while [ $# -gt 0 ]
   do case $1 in
     --cleanup)              cleanup_option=1;;
-    
+
     --install-python-toolchain) python_only=1;;
-    
+
+    --release-opt-for-size) release_opt_for_size=1;;
+    --debug-opt-for-size)   debug_opt_for_size=1;;
+    --target-ios)           with_ios=1; with_python=0; with_capi=1; release_opt_for_size=1;;
+
     --with-system-cmake)    with_system_cmake=1;;
     --no-system-cmake)      with_system_cmake=0;;
 
     --with-ccache)          with_ccache=1;;
     --no-ccache)            with_ccache=0;;
-    
+
+    --with-capi)            with_capi=1;;
+    --with-capi-framework)  with_capi=1; with_capi_framework=1;;
+    --no-capi)              with_capi=0;;
+
     --with-python)          with_python=1;;
     --no-python)            with_python=0;;
+
+    --with-extra-opt-flags) with_extra_opt_flags=1;;
+    --no-extra-opt-flags)   with_extra_opt_flags=0;;
+
+    --with-stack-display)   with_stack_display=1;;
+    --no-stack-display)     with_stack_display=0;;
+    --llvm-path)            shift; llvm_path="$1";;
 
     --with-visualization)   with_visualization=1;;
     --no-visualization)     with_visualization=0;;
 
+    --with-remotefs)        with_remotefs=1;;
+    --no-remotefs)          with_remotefs=0;;
+
     --yes)                  default_yes=1;;
 
-    --python3)              python3=1;;
-    --python3.5)            python35=1;;
-    
     --help)                 print_help ;;
 
     -D)                     CMAKE_CONFIG_FLAGS="${CMAKE_CONFIG_FLAGS} -D $2"; shift ;;
+
+    --virtualenv)           VIRTUALENV="$2"; shift ;;
     *) unknown_option $1 ;;
   esac
   shift
@@ -145,31 +188,14 @@ if [[ $cleanup_option == 1 ]]; then
 fi
 
 
-if [[ $python35 == 1 && $python3 ]]; then
-  echo "Two version of Python specified. Pick one."
-  exit 1
-fi
-
-
-if [[ $python3 == 1 ]]; then
-  CMAKE_CONFIG_FLAGS="${CMAKE_CONFIG_FLAGS} -DPYTHON_VERSION=\"python3.4m\""
-  PYTHON_VERSION="python3.4m"
-elif [[ $python35 == 1 ]]; then
-  CMAKE_CONFIG_FLAGS="${CMAKE_CONFIG_FLAGS} -DPYTHON_VERSION=\"python3.5m\""
-  PYTHON_VERSION="python3.5m"
-else
-  CMAKE_CONFIG_FLAGS="${CMAKE_CONFIG_FLAGS} -DPYTHON_VERSION=\"python2.7\""
-  PYTHON_VERSION="python2.7"
-fi
-
 if [[ $python_only == 1 ]]; then
   install_python_toolchain
-  exit $?  
+  exit $?
 fi
 
 # If we need to build python, we also need to install the python toolchain
 if [[ $with_python == 1 ]]; then
-  if [[ $with_visualization == 0 ]]; then 
+  if [[ $with_visualization == 0 ]]; then
     echo "Visualization client libraries (--with-visualization) required for python build."
     exit 1
   fi
@@ -180,13 +206,56 @@ else
   CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_BUILD_PYTHON=0"
 fi
 
-# If we need to build python, we also need to install the python toolchain
+if [[ $with_extra_opt_flags == 1 ]]; then
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_EXTRA_OPTIMIZATION_FLAGS=1"
+fi
+
+if [[ $with_stack_display == 1 ]]; then
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_STACK_DISPLAY=1"
+fi
+
+if [[ ! -z "${llvm_path}" ]]; then
+  llvm_libraries=$("${llvm_path}/bin/llvm-config" --link-static --libs | tr ' ' ';')
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_LLVM_PATH=${llvm_path}"
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_LLVM_LIBRARIES='${llvm_libraries}'"
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_HAS_LLVM=1"
+fi
+
+if [[ $release_opt_for_size == 1 ]]; then
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DRELEASE_OPT_FOR_SIZE=1"
+fi
+
+if [[ $debug_opt_for_size == 1 ]]; then
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DDEBUG_OPT_FOR_SIZE=1"
+fi
+
+# Check what is needed with the remote_fs stuff
+if [[ $with_capi == 1 ]]; then
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_BUILD_CAPI=1"
+  if [[ $with_capi_framework == 1 ]]; then
+    CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_BUILD_CAPI_FRAMEWORK=1"
+  fi
+  if [[ $with_ios == 1 ]]; then
+    CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DARCH=arm64 -DTC_BUILD_IOS=1"
+  fi
+else
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_BUILD_CAPI=0"
+fi
+
+# Do we need to build the visualization toolkit?
 if [[ $with_visualization == 1 ]]; then
   CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_BUILD_VISUALIZATION_CLIENT=1"
 else
   CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_BUILD_VISUALIZATION_CLIENT=0"
 fi
 
+
+# If we need to build python, we also need to install the python toolchain
+if [[ $with_remotefs == 1 ]]; then
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_ENABLE_REMOTEFS=1"
+else
+  CMAKE_CONFIG_FLAGS="$CMAKE_CONFIG_FLAGS -DTC_ENABLE_REMOTEFS=0 -DTC_NO_CURL=1"
+fi
 
 
 ##################################################################3
@@ -203,17 +272,15 @@ uname -v
 
 
 if [[ $OSTYPE == darwin* ]]; then
-  if [[ -z $CC ]] && [[ -z $CXX ]]; then
-    CC=clang
-    CXX=clang++
-  fi
+  CC=clang
+  CXX=clang++
 fi
 
 # all other cases
 # If not specified we assume gcc and g++ are the default c and c++
 # compilers
 if [[ -z $CC ]]; then
-  if [[ `which cc` ]]; then 
+  if [[ `which cc` ]]; then
     CC=cc
   elif [[ `which gcc` ]]; then
     CC=gcc
@@ -226,9 +293,9 @@ if [[ -z $CC ]]; then
 fi
 
 if [[ -z $CXX ]]; then
-  if [[ `which cxx` ]]; then 
+  if [[ `which cxx` ]]; then
     CXX=cxx
-  elif [[ `which c++` ]]; then 
+  elif [[ `which c++` ]]; then
     CXX=c++
   elif [[ `which g++` ]]; then
     CXX=g++
@@ -242,9 +309,9 @@ fi
 
 CCCMD=`which $CC || echo ""`
 CXXCMD=`which $CXX || echo ""`
-  
+
 echo "CC = $CCCMD"
-echo "CXX = $CXXCMD" 
+echo "CXX = $CXXCMD"
 
 echo "Attempting to use C compiler $CCCMD."
 echo "Attempting to use C++ compiler $CXXCMD."
@@ -258,7 +325,7 @@ mkdir -p $DEPS_PREFIX/bin
 rm -f $CCSCR
 rm -f $CXXSCR
 
-if [ $with_ccache -eq 1 ] && [ -f $CCACHE ]; then 
+if [ $with_ccache -eq 1 ] && [ -f $CCACHE ]; then
 
   echo "Using ccache from $CCACHE."
 
@@ -274,7 +341,7 @@ if [ $with_ccache -eq 1 ] && [ -f $CCACHE ]; then
   exit \$?
   " > $CXXSCR && chmod a+x $CXXSCR
 
-else 
+else
 
   echo "#!/bin/bash -e
   $CCCMD \$@
@@ -335,13 +402,18 @@ function check_version {
 
 function install_cmake {
   echo "Running script to build bundled cmake version."
-  CC=$CCCMD CXX=$CXXCMD ./scripts/cmake_setup.sh ${PWD}/deps/src/cmake-3.9.3 ${PWD}/deps/local || exit 1
+  CC=$CCCMD CXX=$CXXCMD ./scripts/cmake_setup.sh ${PWD}/deps/src/cmake-3.13.4 ${PWD}/deps/local || exit 1
   return $?
 }
 
 CMAKE=`which cmake || echo ""`
+if [[ ! -f ${CMAKE} ]] ; then
+  if [[ -f /Applications/CMake.app/Contents/bin/cmake ]] ; then
+    CMAKE=/Applications/CMake.app/Contents/bin/cmake
+  fi
+fi
 
-function check_cmake { 
+function check_cmake {
 
   if [[ -f $CMAKE ]] ; then
 
@@ -353,8 +425,8 @@ function check_cmake {
         install_cmake
         return $?
       fi
-    fi 
-    
+    fi
+
     if [[ -f ${PWD}/deps/local/bin/cmake ]]; then
       CMAKE=${PWD}/deps/local/bin/cmake
     fi
@@ -362,9 +434,9 @@ function check_cmake {
     #test cmake version
     echo "Testing existing cmake version..."
     currentversion=`$CMAKE --version | awk -F "patch" '{print $1;}' | tr -dc '[0-9].'`
-    echo "Detected ${currentversion}. Required 3.5.0"
+    echo "Detected ${currentversion}. Required 3.12.0"
 
-    check_version $currentversion "3.5.1"
+    check_version $currentversion "3.12.0"
 
     if [ $? -ne 2 ]; then
       echo "CMake version is good; using built-in version."
@@ -380,9 +452,9 @@ function check_cmake {
   fi
 }
 
-check_cmake || { 
-  echo "Error 1: Error reported installing CMake." 
-  exit 1 
+check_cmake || {
+  echo "Error 1: Error reported installing CMake."
+  exit 1
 }
 
 ########################################################
@@ -390,12 +462,6 @@ check_cmake || {
 
 set -e
 set -o pipefail
-
-# Delete the cython make files. If cython files get removed,
-# CMake has a tendency to leave the build files around.
-# So we just delete them and reconfigure should take care of it.
-rm -rf ${RELEASE_DIR}/src/unity/python/turicreate/cython
-rm -rf ${DEBUG_DIR}/src/unity/python/turicreate/cython
 
 echo -e "\n\n\n======================= Release ========================" \
 

@@ -8,14 +8,12 @@
 
 import os
 import sys
-import glob
-import subprocess
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages, Extension
 from setuptools.dist import Distribution
 from setuptools.command.install import install
 
 PACKAGE_NAME="turicreate"
-VERSION='4.0'#{{VERSION_STRING}}
+VERSION='5.5'#{{VERSION_STRING}}
 
 # Prevent distutils from thinking we are a pure python package
 class BinaryDistribution(Distribution):
@@ -51,7 +49,6 @@ class InstallEngine(install):
         from distutils.util import get_platform
         from pkg_resources import parse_version
         cur_platform = get_platform()
-        py_shobj_ext = 'so'
 
         if cur_platform.startswith("macosx"):
 
@@ -65,7 +62,6 @@ class InstallEngine(install):
         elif cur_platform.startswith('linux'):
             pass
         elif cur_platform.startswith('win'):
-            py_shobj_ext = 'pyd'
             win_ver = platform.version()
             # Verify this is Vista or above
             if parse_version(win_ver) < parse_version('6.0'):
@@ -82,11 +78,6 @@ class InstallEngine(install):
             sys.stderr.write(msg)
             sys.exit(1)
 
-        from distutils import sysconfig
-        import stat
-        import glob
-
-        root_path = os.path.join(self.install_lib, PACKAGE_NAME)
 
 if __name__ == '__main__':
     from distutils.util import get_platform
@@ -101,6 +92,8 @@ if __name__ == '__main__':
         "License :: OSI Approved :: BSD License",
         "Natural Language :: English",
         "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: Implementation :: CPython",
         "Topic :: Scientific/Engineering",
         "Topic :: Scientific/Engineering :: Information Analysis",
@@ -121,54 +114,75 @@ if __name__ == '__main__':
         sys.stderr.write(msg)
         sys.exit(1)
 
+    with open(os.path.join(os.path.dirname(__file__), 'README.rst'), 'rb') as f:
+        long_description = f.read().decode('utf-8')
+
     setup(
         name="turicreate",
         version=VERSION,
+
+        # This distribution contains platform-specific C++ libraries, but they are not
+        # built with distutils. So we must create a dummy Extension object so when we
+        # create a binary file it knows to make it platform-specific.
+        ext_modules=[Extension('turicreate.__dummy', sources = ['dummy.c'])],
+
         author='Apple Inc.',
         author_email='turi-create@group.apple.com',
         cmdclass=dict(install=InstallEngine),
         distclass=BinaryDistribution,
         package_data={
-        'turicreate': [
-                     'cython/*.so', 'cython/*.pyd', 'cython/*.dll', 'id',
-                     'toolkits/deeplearning/*.conf',
-                     '*.so', '*.so.1', '*.dylib',
-                     '*.dll', '*.def',
-                     'deploy/*.jar', '*.exe', 'libminipsutil.*',
-                     'mxnet/*.ttf',
-                    'Turi Create Visualization.app/Contents/_CodeSignature/CodeResources',
-                    'Turi Create Visualization.app/Contents/Frameworks/*.dylib',
-                    'Turi Create Visualization.app/Contents/Info.plist',
-                    'Turi Create Visualization.app/Contents/Resources/*.car',
-                    'Turi Create Visualization.app/Contents/Resources/*.css',
-                    'Turi Create Visualization.app/Contents/Resources/*.icns',
-                    'Turi Create Visualization.app/Contents/Resources/*.js',
-                    'Turi Create Visualization.app/Contents/Resources/*.html',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/XfG-lQ-9wD-view-m2S-Jp-Qdl.nib',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/NSViewController-99M-uP-3Iu.nib',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/mainWindow.nib',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/MainMenu.nib',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/Info.plist',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/mainWindowRun.nib',
-                    'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/99M-uP-3Iu-view-SkP-0p-uFQ.nib',
-                    'Turi Create Visualization.app/Contents/Resources/*.dylib',
-                    'Turi Create Visualization.app/Contents/PkgInfo',
-                    'Turi Create Visualization.app/Contents/MacOS/Turi Create Visualization'
-                     ]},
+            'turicreate': [
+                '_cython/*.so', '_cython/*.pyd',
+                '*.so', '*.dylib',
+
+                # macOS visualization
+                'Turi Create Visualization.app/Contents/*',
+                'Turi Create Visualization.app/Contents/_CodeSignature/*',
+                'Turi Create Visualization.app/Contents/MacOS/*',
+                'Turi Create Visualization.app/Contents/Resources/*',
+                'Turi Create Visualization.app/Contents/Resources/Base.lproj/*',
+                'Turi Create Visualization.app/Contents/Resources/Base.lproj/Main.storyboardc/*',
+                'Turi Create Visualization.app/Contents/Resources/build/*',
+                'Turi Create Visualization.app/Contents/Resources/build/static/*',
+                'Turi Create Visualization.app/Contents/Resources/build/static/css/*',
+                'Turi Create Visualization.app/Contents/Resources/build/static/js/*',
+                'Turi Create Visualization.app/Contents/Resources/build/static/media/*',
+                'Turi Create Visualization.app/Contents/Frameworks/*',
+
+                # Linux visualization
+                'Turi Create Visualization/*.*',
+                'Turi Create Visualization/visualization_client',
+                'Turi Create Visualization/swiftshader/*',
+                'Turi Create Visualization/locales/*',
+                'Turi Create Visualization/html/*.*',
+                'Turi Create Visualization/html/static/js/*',
+                'Turi Create Visualization/html/static/css/*',
+
+                # Plot.save dependencies
+                'visualization/vega_3.2.1.js',
+                'visualization/vg2png',
+                'visualization/vg2svg'
+            ]
+        },
         packages=find_packages(
-            exclude=["*.tests", "*.tests.*", "tests.*", "tests", "*.test", "*.test.*", "test.*", "test",
-                     "*.demo", "*.demo.*", "demo.*", "demo", "*.demo", "*.demo.*", "demo.*", "demo"]),
+            exclude=["test"]
+        ),
         url='https://github.com/apple/turicreate',
         license='LICENSE.txt',
-        description='Turi Create enables developers and data scientists to apply machine learning to build state of the art data products.',
+        description='Turi Create simplifies the development of custom machine learning models.',
+        long_description=long_description,
         classifiers=classifiers,
         install_requires=[
             "decorator >= 4.0.9",
             "prettytable == 0.7.2",
             "requests >= 2.9.1",
-            "mxnet >= 0.11, < 1.0.0",
-            "coremltools == 0.6.3",
+            "mxnet >= 1.1.0, < 1.2.0",
+            "coremltools==2.1.0",
             "pillow >= 3.3.0",
             "pandas >= 0.19.0",
+            "scipy >= 0.14.0",
+            "six >= 1.10.0",
+            "resampy == 0.2.1",
+            "numpy"
         ],
     )

@@ -17,9 +17,9 @@ from ..data_structures.sframe import SFrame as _SFrame
 from ..data_structures.sgraph import SGraph as _SGraph
 from ..data_structures.sgraph import Vertex as _Vertex
 from ..data_structures.sgraph import Edge as _Edge
-from ..cython.cy_sarray import UnitySArrayProxy
-from ..cython.cy_sframe import UnitySFrameProxy
-from ..cython.cy_graph import UnityGraphProxy
+from .._cython.cy_sarray import UnitySArrayProxy
+from .._cython.cy_sframe import UnitySFrameProxy
+from .._cython.cy_graph import UnityGraphProxy
 from ..toolkits._main import ToolkitError
 
 import json
@@ -91,8 +91,10 @@ def _find_only_column_of_type(sframe, target_type, type_name, col_name):
     strings for the purpose of error feedback.
     """
     image_column_name = None
+    if type(target_type) != list:
+        target_type = [target_type]
     for name, ctype in zip(sframe.column_names(), sframe.column_types()):
-        if ctype is target_type:
+        if ctype in target_type:
             if image_column_name is not None:
                 raise ToolkitError('No "{col_name}" column specified and more than one {type_name} column in "dataset". Can not infer correct {col_name} column.'.format(col_name=col_name, type_name=type_name))
             image_column_name = name
@@ -100,16 +102,103 @@ def _find_only_column_of_type(sframe, target_type, type_name, col_name):
         raise ToolkitError('No %s column in "dataset".' % type_name)
     return image_column_name
 
-
 def _find_only_image_column(sframe):
     """
-    Finds the only column in `sframe` with a type of turicreate.Image. If there are zero or
-    more than one image columns, an exception will be raised.
+    Finds the only column in `sframe` with a type of turicreate.Image. 
+    If there are zero or more than one image columns, an exception will 
+    be raised.
     """
     from turicreate import Image
     return _find_only_column_of_type(sframe, target_type=Image,
                                      type_name='image', col_name='feature')
 
+def _find_only_drawing_column(sframe):
+    """
+    Finds the only column that can be interpreted as a drawing feature column.
+    A drawing column can be a stroke-based drawing column (with dtype list)
+    or a bitmap-based drawing column (with dtype turicreate.Image)
+    
+    If there are zero or more than one drawing columns, an exception will be
+    raised.
+    """
+    from turicreate import Image
+    bitmap_success, stroke_success = False, False
+    bitmap_error, stroke_error = None, None
+    feature = None
+    try:
+        feature = _find_only_column_of_type(sframe, 
+            target_type=Image, type_name='drawing', col_name='feature')
+        bitmap_success = True
+    except ToolkitError as err_from_bitmap_search:
+        bitmap_error = err_from_bitmap_search
+    
+    try:
+        feature = _find_only_column_of_type(sframe, 
+            target_type=list, type_name='drawing', col_name='feature')
+        stroke_success = True
+    except ToolkitError as err_from_stroke_search:
+        stroke_error = err_from_stroke_search
+
+    more_than_one_image_columns = ("more than one" in str(bitmap_error) 
+        if not bitmap_success else False)
+    more_than_one_stroke_columns = ("more than one" in str(stroke_error) 
+        if not stroke_success else False)
+
+    corrective_action_for_user = ("\nThe feature column must contain either " 
+        + "bitmap-based drawings or stroke-based drawings but not both.\n" 
+        + "Bitmap-based drawing input must be a grayscale "
+        + "tc.Image of any size.\n"
+        + "Stroke-based drawing input must be in the following format:\n"
+        + "Every drawing must be represented by a list of strokes, where each "
+        + "stroke must be a list of points in the order in which they were "
+        + "drawn on the canvas. "
+        + "Every point must be a dictionary with two keys, 'x' and 'y', and " 
+        + "their respective values must be numerical, " 
+        + "i.e. either integer or float.")
+
+    error_message = (lambda num1, type1, input1, num2, type2, input2:
+            (("No 'feature' column specified. Found {num1} column with type " 
+            + "{type1} (for {input1}-based drawing input) and " 
+            + "{num2} column with type {type2} (for {input2}-based drawing " 
+            + "input) in 'input_dataset'. " 
+            + "Can not infer correct 'feature' column.").format(
+                num1=num1, input1=input1, type1=type1,
+                num2=num2, input2=input2, type2=type2)
+            )
+        )
+
+    if (bitmap_success ^ stroke_success 
+        and not more_than_one_image_columns 
+        and not more_than_one_stroke_columns):
+        # success! 
+        # found exactly one of bitmap-based drawing column and
+        # stroke-based drawing column, and found none of the other.
+        return feature
+    elif bitmap_success and stroke_success:
+        raise ToolkitError(error_message(
+                "one", "turicreate.Image", "bitmap", "one", "list", "stroke") 
+            + corrective_action_for_user)
+    else:
+        if more_than_one_image_columns and more_than_one_stroke_columns:
+            raise ToolkitError(error_message(
+                "more than one", "turicreate.Image", "bitmap", 
+                "more than one", "list", "stroke") 
+                + corrective_action_for_user)
+        elif more_than_one_image_columns and not more_than_one_stroke_columns:
+            raise ToolkitError(error_message(
+                "more than one", "turicreate.Image", "bitmap", 
+                "no", "list", "stroke") 
+                + corrective_action_for_user)
+        elif not more_than_one_image_columns and more_than_one_stroke_columns:
+            raise ToolkitError(error_message(
+                "more than one", "list", "stroke",
+                "no", "turicreate.Image", "bitmap")
+                + corrective_action_for_user)
+        else:
+            raise ToolkitError(error_message(
+                "no", "list", "stroke", 
+                "no", "turicreate.Image", "bitmap")
+                + corrective_action_for_user)
 
 def _SGraphFromJsonTree(json_str):
     """
@@ -471,6 +560,70 @@ def _numeric_param_check_range(variable_name, variable_value, range_bottom, rang
     if variable_value < range_bottom or variable_value > range_top:
         raise ToolkitError(err_msg % (variable_name, range_bottom, range_top))
 
+def _validate_data(dataset, target, features=None, validation_set='auto'):
+    """
+    Validate and canonicalize training and validation data.
+
+    Parameters
+    ----------
+    dataset : SFrame
+        Dataset for training the model.
+
+    target : string
+        Name of the column containing the target variable.
+
+    features : list[string], optional
+        List of feature names used.
+
+    validation_set : SFrame, optional
+        A dataset for monitoring the model's generalization performance, with
+        the same schema as the training dataset. Can also be None or 'auto'.
+
+    Returns
+    -------
+    dataset : SFrame
+        The input dataset, minus any columns not referenced by target or
+        features
+
+    validation_set : SFrame or str
+        A canonicalized version of the input validation_set. For SFrame
+        arguments, the returned SFrame only includes those columns referenced by
+        target or features. SFrame arguments that do not match the schema of
+        dataset, or string arguments that are not 'auto', trigger an exception.
+    """
+
+    _raise_error_if_not_sframe(dataset, "training dataset")
+
+    # Determine columns to keep
+    if features is None:
+        features = [feat for feat in dataset.column_names() if feat != target]
+    if not hasattr(features, '__iter__'):
+        raise TypeError("Input 'features' must be a list.")
+    if not all([isinstance(x, str) for x in features]):
+        raise TypeError(
+            "Invalid feature %s: Feature names must be of type str" % x)
+
+    # Check validation_set argument
+    if isinstance(validation_set, str):
+        # Only string value allowed is 'auto'
+        if validation_set != 'auto':
+            raise TypeError('Unrecognized value for validation_set.')
+    elif isinstance(validation_set, _SFrame):
+        # Attempt to append the two datasets together to check schema
+        validation_set.head().append(dataset.head())
+
+        # Reduce validation set to requested columns
+        validation_set = _toolkits_select_columns(
+            validation_set, features + [target])
+    elif not validation_set is None:
+        raise TypeError("validation_set must be either 'auto', None, or an "
+                        "SFrame matching the training data.")
+
+    # Reduce training set to requested columns
+    dataset = _toolkits_select_columns(dataset, features + [target])
+
+    return dataset, validation_set
+
 def _validate_row_label(dataset, label=None, default_label='__id'):
     """
     Validate a row label column. If the row label is not specified, a column is
@@ -554,3 +707,27 @@ def _mac_ver():
         return tuple([int(v) for v in ver_str.split('.')])
     else:
         return ()
+
+def _print_neural_compute_device(cuda_gpus, use_mps, cuda_mem_req=None, has_mps_impl=True):
+    """
+    Print a message making it clear to the user what compute resource is used in
+    neural network training.
+    """
+    num_cuda_gpus = len(cuda_gpus)
+    if num_cuda_gpus >= 1:
+        gpu_names = ', '.join(gpu['name'] for gpu in cuda_gpus)
+
+    if use_mps:
+        from ._mps_utils import mps_device_name
+        print('Using GPU to create model ({})'.format(mps_device_name()))
+    elif num_cuda_gpus >= 1:
+        from . import _mxnet_utils
+        plural = 's' if num_cuda_gpus >= 2 else ''
+        print('Using GPU{} to create model ({})'.format(plural, gpu_names))
+        if cuda_mem_req is not None:
+            _mxnet_utils._warn_if_less_than_cuda_free_memory(cuda_mem_req, max_devices=num_cuda_gpus)
+    else:
+        import sys
+        print('Using CPU to create model')
+        if sys.platform == 'darwin' and _mac_ver() < (10, 14) and has_mps_impl:
+            print('NOTE: If available, an AMD GPU can be leveraged on macOS 10.14+ for faster model creation')

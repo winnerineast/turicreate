@@ -9,14 +9,13 @@
 #include <cfenv>
 
 #include <ml_data/ml_data.hpp>
-#include <toolkits/supervised_learning/supervised_learning.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning.hpp>
 #include <sframe/testing_utils.hpp>
-#include <numerics/armadillo.hpp>
 
 using namespace turi;
 using namespace turi::supervised;
 
-typedef arma::vec  DenseVector;
+typedef Eigen::Matrix<double, Eigen::Dynamic,1>  DenseVector;
 
 /**
  * Supervised_learning model example toolkit
@@ -64,21 +63,19 @@ class predict_constant : public supervised_learning_model_base {
    * -------------------------------------------------------------------------
    */
 
-
-  /**
-   * Returns the name of the model.
-   */
-  std::string name(){
-    return "predict_constant";
-  }
-
-
+  BEGIN_CLASS_MEMBER_REGISTRATION("predict_constant");
+  IMPORT_BASE_CLASS_REGISTRATION(supervised_learning_model_base);
+  END_CLASS_MEMBER_REGISTRATION
+  
   /**
    * Train a supervised_learning model.
    */
-  void train(){
+  void train() override {
     constant = options.value("constant");
   }
+
+  bool is_classifier() const override { return false; }
+
 
   /**
    * Set one of the options in the model. Use the option manager to set
@@ -87,7 +84,7 @@ class predict_constant : public supervised_learning_model_base {
    *
    * \param[in] options Options to set
    */
-  void init_options(const std::map<std::string, flexible_type>&_options){
+  void init_options(const std::map<std::string, flexible_type>&_options) override {
 
     options.create_real_option(
         "constant",
@@ -117,25 +114,29 @@ class predict_constant : public supervised_learning_model_base {
     add_or_update_state(flexmap_to_varmap(options.current_option_values()));
   }
 
-  flexible_type predict_single_example(const DenseVector& x,
-         const prediction_type_enum& output_type){
+  flexible_type predict_single_example(
+    const DenseVector& x,
+    const prediction_type_enum& output_type) override {
+
     return constant;
   }
 
-  flexible_type predict_single_example(const SparseVector& x,
-         const prediction_type_enum& output_type){
+  flexible_type predict_single_example(
+    const SparseVector& x,
+    const prediction_type_enum& output_type) override {
+
     return constant;
   }
 
 
-  size_t get_version() const {
+  size_t get_version() const override {
     return 0;
   }
 
   /**
    * Save the object using Turi's oarc.
    */
-  void save_impl(turi::oarchive& oarc) const{
+  void save_impl(turi::oarchive& oarc) const override {
 
     variant_deep_save(state, oarc);
 
@@ -150,7 +151,7 @@ class predict_constant : public supervised_learning_model_base {
   /**
    * Load the object using Turi's iarc.
    */
-  void load_version(turi::iarchive& iarc, size_t version){
+  void load_version(turi::iarchive& iarc, size_t version) override {
 
     // State
     variant_deep_load(state, iarc);
@@ -172,7 +173,9 @@ class predict_constant : public supervised_learning_model_base {
     return constant;
   }
 
-
+  std::shared_ptr<coreml::MLModelWrapper> export_to_coreml() override {
+    return std::shared_ptr<coreml::MLModelWrapper>();
+  }
 };
 
 
@@ -188,7 +191,7 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   // Answers
   // -----------------------------------------------------------------------
   DenseVector coefs(features);
-  coefs.randn();
+  coefs.setRandom();
 
   // Feature names
   std::vector<std::string> feature_names;
@@ -203,14 +206,14 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   std::vector<std::vector<flexible_type>> X_data;
   for(size_t i=0; i < examples; i++){
     DenseVector x((size_t) features);
-    x.randn();
+    x.setRandom();
     std::vector<flexible_type> x_tmp;
     for(size_t k=0; k < features; k++){
       x_tmp.push_back(x(k));
     }
 
     // Compute the prediction for this
-    double t = arma::dot(x, coefs);
+    double t = x.dot(coefs);
     std::vector<flexible_type> y_tmp;
     y_tmp.push_back(t);
     X_data.push_back(x_tmp);
@@ -266,7 +269,6 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   ml_data data;
   std::vector<flexible_type> _pred;
   std::shared_ptr<sarray<flexible_type>> pred;
-  size_t rows;
 
 
   // Check the model
@@ -306,7 +308,7 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   TS_ASSERT(_get == 0);
 
   // Check list_fields
-  _list_fields = model->list_keys();
+  _list_fields = model->list_fields();
   for(const auto& f: _list_fields_ans){
     TS_ASSERT(std::find(_list_fields.begin(), _list_fields.end(), f)
                                                     != _list_fields.end());
@@ -320,7 +322,7 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   data = model->construct_ml_data_using_current_metadata(X);
   pred = model->predict(data);
   auto reader = pred->get_reader();
-  rows = reader->read_rows(0, examples, _pred);
+  reader->read_rows(0, examples, _pred);
   for(size_t i=0; i < examples; i++){
     TS_ASSERT(_pred[i] - options["constant"] < 1e-5);
   }
@@ -382,7 +384,7 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   TS_ASSERT(_get == 0);
 
   // Check list_fields
-  _list_fields = loaded_model->list_keys();
+  _list_fields = loaded_model->list_fields();
   for(const auto& f: _list_fields_ans){
     TS_ASSERT(std::find(_list_fields.begin(), _list_fields.end(), f)
                             != _list_fields.end());
@@ -397,7 +399,7 @@ void run_predict_constant_test(std::map<std::string, flexible_type> opts) {
   data = loaded_model->construct_ml_data_using_current_metadata(X);
   pred = loaded_model->predict(data);
   auto reader2 = pred->get_reader();
-  rows = reader2->read_rows(0, examples, _pred);
+  reader2->read_rows(0, examples, _pred);
   for(size_t i=0; i < examples; i++){
     TS_ASSERT(_pred[i] - options["constant"] < 1e-5);
   }

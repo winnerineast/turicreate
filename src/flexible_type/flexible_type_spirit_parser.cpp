@@ -34,7 +34,13 @@ qi::real_parser< double, strict_real_policies<double> > real;
 
 template <typename Iterator, typename SpaceType>
 struct flexible_type_parser_impl: qi::grammar<Iterator, flexible_type(), SpaceType> {
-  flexible_type_parser_impl(std::string delimiter = ",", char escape_char = '\\') : 
+  flexible_type_parser_impl(std::string delimiter = ",", 
+                            bool use_escape_char = true, 
+                            char escape_char = '\\',
+                            const std::unordered_set<std::string>& na_val = std::unordered_set<std::string>(),
+                            const std::unordered_set<std::string>& true_val = std::unordered_set<std::string>(),
+                            const std::unordered_set<std::string>& false_val = std::unordered_set<std::string>(),
+                            bool only_raw_string_substitutions=false) :
       flexible_type_parser_impl::base_type(root_parser), delimiter(delimiter) {
     using qi::long_long;
     using qi::double_;
@@ -54,8 +60,13 @@ struct flexible_type_parser_impl: qi::grammar<Iterator, flexible_type(), SpaceTy
      */
     parser_impl::parser_config recursive_element_string_parser;
     recursive_element_string_parser.restrictions = ",{}[]";
+    recursive_element_string_parser.use_escape_char = use_escape_char;
     recursive_element_string_parser.escape_char = escape_char;
     recursive_element_string_parser.double_quote = true;
+    recursive_element_string_parser.na_val = na_val;
+    recursive_element_string_parser.true_val = true_val;
+    recursive_element_string_parser.false_val = false_val;
+    recursive_element_string_parser.only_raw_string_substitutions = only_raw_string_substitutions;
 
     /*
      * A parser which parses strings, and stops at all unquoted delimiters
@@ -63,16 +74,26 @@ struct flexible_type_parser_impl: qi::grammar<Iterator, flexible_type(), SpaceTy
      */
     parser_impl::parser_config dictionary_element_string_parser;
     dictionary_element_string_parser.restrictions = " ,\t{}[]:;";
+    dictionary_element_string_parser.use_escape_char = use_escape_char;
     dictionary_element_string_parser.escape_char = escape_char;
     dictionary_element_string_parser.double_quote = true;
+    dictionary_element_string_parser.na_val = na_val;
+    dictionary_element_string_parser.true_val = true_val;
+    dictionary_element_string_parser.false_val = false_val;
+    dictionary_element_string_parser.only_raw_string_substitutions = only_raw_string_substitutions;
 
     parser_impl::parser_config root_flex_string;
     // when the delimiter is just one character, using the restrictions is faster.
     if (delimiter.length() <= 1) root_flex_string.restrictions = delimiter;
     else root_flex_string.delimiter = delimiter;
 
+    root_flex_string.use_escape_char = use_escape_char;
     root_flex_string.escape_char = escape_char;
     root_flex_string.double_quote = true;
+    root_flex_string.na_val = na_val;
+    root_flex_string.true_val = true_val;
+    root_flex_string.false_val = false_val;
+    root_flex_string.only_raw_string_substitutions = only_raw_string_substitutions;
 
     string = 
         (parser_impl::restricted_string(root_flex_string)[_val = _1]);
@@ -184,11 +205,17 @@ struct flexible_type_parser_impl: qi::grammar<Iterator, flexible_type(), SpaceTy
 
 
 
-flexible_type_parser::flexible_type_parser(std::string separator, char escape_char):
+flexible_type_parser::flexible_type_parser(std::string separator, 
+                                           bool use_escape_char, 
+                                           char escape_char,
+                                           const std::unordered_set<std::string>& na_val,
+                                           const std::unordered_set<std::string>& true_val,
+                                           const std::unordered_set<std::string>& false_val,
+                                           bool only_raw_string_substitutions):
     parser(new flexible_type_parser_impl<const char*, 
-           decltype(space)>(separator, escape_char)), 
+           decltype(space)>(separator, use_escape_char, escape_char, na_val, true_val, false_val, only_raw_string_substitutions)), 
     non_space_parser(new flexible_type_parser_impl<const char*, 
-                     decltype(qi::eoi)>(separator, escape_char)), 
+                     decltype(qi::eoi)>(separator, use_escape_char, escape_char, na_val, true_val, false_val, only_raw_string_substitutions)), 
     m_delimiter_has_space(delimiter_has_space(parser->delimiter))
     { }
 
@@ -213,6 +240,7 @@ flexible_type_parser::general_flexible_type_parse(const char** str, size_t len) 
     ret.second = qi::phrase_parse((*str), (*str) + len, 
                                   *non_space_parser,
                                   qi::eoi,
+                                  qi::skip_flag::dont_postskip,
                                   ret.first);
   }
   if (ret.second) {

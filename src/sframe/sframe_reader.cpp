@@ -12,7 +12,6 @@ namespace turi {
 
 void sframe_reader::init(const sframe& frame, size_t num_segments) { 
   Dlog_func_entry();
-  typedef sarray_reader<flexible_type> array_reader_type;
   ASSERT_MSG(!inited, "SFrame reader already inited");
   index_info = frame.get_index_info();
   // no columns. Just stop.
@@ -25,21 +24,21 @@ void sframe_reader::init(const sframe& frame, size_t num_segments) {
     m_num_segments = frame.columns[0]->get_index_info().nsegments;
     std::vector<size_t> segment_sizes = frame.columns[0]->get_index_info().segment_sizes;
     for (size_t i = 0;i < index_info.column_names.size(); ++i) {
-      column_data.emplace_back(std::move(frame.columns[i]->get_reader(segment_sizes)));
+      column_data.emplace_back(frame.columns[i]->get_reader(segment_sizes));
     }
   } else {
     // create num_segments worth of segments
     m_num_segments = num_segments;
     for (size_t i = 0;i < index_info.column_names.size(); ++i) {
-      column_data.emplace_back(std::move(frame.columns[i]->get_reader(m_num_segments)));
+      column_data.emplace_back(frame.columns[i]->get_reader(m_num_segments));
     }
   }
 }
 
 void sframe_reader::init(const sframe& frame, const std::vector<size_t>& segment_lengths) { 
   Dlog_func_entry();
-  typedef sarray_reader<flexible_type> array_reader_type;
   ASSERT_MSG(!inited, "SFrame reader already inited");
+
   // Verify that lengths match up 
   index_info = frame.get_index_info();
   size_t sum = 0;
@@ -48,7 +47,7 @@ void sframe_reader::init(const sframe& frame, const std::vector<size_t>& segment
 
   m_num_segments = segment_lengths.size();
   for (size_t i = 0;i < index_info.column_names.size(); ++i) {
-    column_data.emplace_back(std::move(frame.columns[i]->get_reader(segment_lengths)));
+    column_data.emplace_back(frame.columns[i]->get_reader(segment_lengths));
   }
 }
 

@@ -5,18 +5,20 @@
  */
 #include <sframe/sarray.hpp>
 #include <sframe/sframe.hpp>
+#include <unity/lib/gl_sframe.hpp>
 #include <unity/lib/gl_sarray.hpp>
 #include <unity/toolkits/util/precision_recall.hpp>
 
 // ML-Data
-#include <unity/toolkits/ml_data_2/ml_data.hpp>
-#include <unity/toolkits/ml_data_2/ml_data_iterators.hpp>
-
+#include <ml_data/column_indexer.hpp>
 
 // Evaluation
 #include <unity/toolkits/util/indexed_sframe_tools.hpp>
 #include <unity/toolkits/evaluation/evaluation_constants.hpp>
 #include <unity/toolkits/evaluation/metrics.hpp>
+#include <unity/toolkits/object_detection/od_data_iterator.hpp>
+#include <unity/toolkits/object_detection/od_evaluation.hpp>
+#include <unity/toolkits/supervised_learning/classifier_evaluations.hpp>
 
 #include <map>
 #include <algorithm>
@@ -24,6 +26,75 @@
 
 namespace turi {
 namespace evaluation {
+
+namespace {
+
+std::vector<std::string> get_default_classifier_metrics() {
+  return {"accuracy", "auc", "precision", "recall", "f1_score", "log_loss",
+          "confusion_matrix", "roc_curve"};
+}
+
+std::vector<std::string> get_classifier_metrics(const std::string& metric) {
+  // Validate metric and determine list of metrics to compute.
+  std::vector<std::string> metrics = get_default_classifier_metrics();
+  if (metric != "auto") {
+    // If the caller didn't request "auto", then adjust the list of metrics.
+    if (metric == "report") {
+      // Add the per-class report to the standard list of metrics.
+      metrics.push_back("report_by_class");
+    } else {
+      // Just compute the requested metric, if valid.
+      if (std::find(metrics.begin(), metrics.end(), metric) == metrics.end()) {
+        log_and_throw("Unsupported metric " + metric);
+      } else {
+        metrics = {metric};
+      }
+    }
+  }
+  return metrics;
+}
+
+gl_sarray get_prediction_probability_vectors(const gl_sarray& predictions,
+                                             const flex_list& class_labels) {
+  // Canonicalize predictions into flex_vec.
+  gl_sarray result;
+  switch (predictions.dtype()) {
+  case flex_type_enum::VECTOR:
+    result = predictions;
+    break;
+  case flex_type_enum::ND_VECTOR:
+    result = predictions.astype(flex_type_enum::VECTOR);
+    break;
+  case flex_type_enum::DICT: {
+    // Require/assume the dictionary to map class labels to probabilities.
+
+    // Build a fast lookup table from label to flex_vec index.
+    auto class_to_index =
+        std::make_shared<std::unordered_map<flexible_type, size_t>>();
+    for (size_t i = 0; i < class_labels.size(); ++i) {
+      class_to_index->emplace(class_labels[i], i);
+    }
+
+    // Use the lookup table to write a flex_vec for each flex_dict.
+    auto flatten = [class_to_index](const flexible_type& ft) {
+      const flex_dict& dict = ft.get<flex_dict>();
+      flex_vec vec(dict.size());
+      for (const auto& kv : dict) {
+        vec[class_to_index->at(kv.first)] = kv.second;
+      }
+      return vec;
+    };
+    result = predictions.apply(flatten, flex_type_enum::VECTOR);
+    break;
+  }
+  default:
+    log_and_throw("Could not convert predictions to probability vectors for "
+                  "classifier evaluation");
+  }
+  return result;
+}
+
+}
 
 /*
  * Utility function to get the index map for an SArray. 
@@ -85,8 +156,9 @@ variant_type _supervised_streaming_evaluator(
   for (const auto& kvp: kwargs) {
     opts[kvp.first] = to_variant(kvp.second);
   } 
-  if ((metric == "auc") || (metric == "roc_curve") || 
-      (metric == "binary_logloss") || (metric == "multiclass_logloss")) {
+  const bool needs_index_map = (metric == "auc") || (metric == "roc_curve") ||
+      (metric == "binary_logloss") || (metric == "multiclass_logloss");
+  if (needs_index_map && opts.count("index_map") == 0) {
     opts["index_map"] =  to_variant(
         get_index_map(unity_targets, unity_predictions));
   }
@@ -100,7 +172,7 @@ variant_type _supervised_streaming_evaluator(
   auto pred_reader = predictions->get_reader();
   size_t current_row = 0;
   size_t nrows_y = MBSIZE;
-  size_t nrows_yhat = MBSIZE;
+  TURI_ATTRIBUTE_UNUSED_NDEBUG size_t nrows_yhat = MBSIZE;
 
   while (nrows_y == MBSIZE) {
     std::vector<flexible_type> current_yhat;
@@ -119,204 +191,308 @@ variant_type _supervised_streaming_evaluator(
   return evaluator->get_metric();
 }
 
+variant_map_type compute_classifier_metrics_from_probability_vectors(
+    std::vector<std::string> metrics, gl_sframe input,
+    std::string target_column_name, std::string prediction_probs_column_name,
+    flex_list class_labels)
+{
+  variant_map_type result;
+
+  // Configure an SFrame `data` such that column 0 is the target, column 1 is
+  // the probability vector, and column 2 is the most likely class label.
+  gl_sframe data =
+      input.select_columns({target_column_name, prediction_probs_column_name});
+  auto max_prob_label = [&class_labels](const flexible_type& ft) {
+    const flex_vec& prob_vec = ft.get<flex_vec>();
+    auto max_it = std::max_element(prob_vec.begin(), prob_vec.end());
+    return class_labels[max_it - prob_vec.begin()];
+  };
+  data.add_column(data[prediction_probs_column_name].apply(
+      max_prob_label, class_labels.front().get_type()));
+
+  // Handle "confusion_matrix" separately.
+  // TODO: Unify with the logic in supervised_learning_model_base::api_evaluate,
+  // and with the "confusion_matrix" evaluator returned by get_evaluator_metric.
+  auto new_metrics_end = std::remove(metrics.begin(), metrics.end(),
+                                     "confusion_matrix");
+  if (new_metrics_end != metrics.end()) {
+    // Don't expose get_evaluator_metric() to "confusion_matrix".
+    metrics.erase(new_metrics_end, metrics.end());
+
+    // Borrow the implementation from the supervised_learning toolkit.
+    // Use the column names consistent with that toolkit's api_evaluate.
+    result["confusion_matrix"] = supervised::confusion_matrix(
+        gl_sframe({ {"class",           data[target_column_name]         },
+                    {"predicted_class", data[data.column_names().back()] }  }),
+        "class", "predicted_class");
+  }
+
+  // Handle "report_by_class" separately.
+  // TODO: Implement "report_by_class" using the standard evaluation framework.
+  new_metrics_end = std::remove(metrics.begin(), metrics.end(),
+                                "report_by_class");
+  if (new_metrics_end != metrics.end()) {
+    // Don't expose get_evaluator_metric() to "report_by_class".
+    metrics.erase(new_metrics_end, metrics.end());
+
+    // Borrow the implementation from the supervised_learning toolkit.
+    result["report_by_class"] = supervised::classifier_report_by_class(
+        data, target_column_name, data.column_names().back());
+  }
+
+  // Construct the class-to-index map.
+  std::unordered_map<flexible_type, size_t> class_to_index;
+  for (size_t i = 0; i < class_labels.size(); ++i) {
+    class_to_index[class_labels[i]] = i;
+  }
+
+  // Initialize the evaluators. Note that we always use the "multiclass" version
+  // since we have full probability vectors. (The binary versions only expect
+  // a single probability, for the "positive" class.)
+  using evaluator_shared_ptr = std::shared_ptr<supervised_evaluation_interface>;
+  std::map<std::string, variant_type> opts =
+      { {"index_map", to_variant(class_to_index)},
+        {"binary",    false                     } };
+  std::map<std::string, evaluator_shared_ptr> evaluators;
+  for (const std::string& metric : metrics) {
+    // Apply the default options and tweaks to metric implementations defined
+    // by the Python API.
+    // TODO: Should the metric implementations themselves (or
+    // get_evaluator_metric) define the defaults?
+    std::string metric_impl = metric;
+    if (metric == "accuracy") {
+      opts["average"] = "micro";
+      metric_impl = "flexible_accuracy";
+    } else if (metric == "auc") {
+      opts["average"] = "macro";
+    } else if (metric == "f1_score") {
+      opts["average"] = "macro";
+      opts["beta"] = 1.0;
+      metric_impl = "fbeta_score";
+    } else if (metric == "log_loss") {
+      metric_impl = "multiclass_logloss";
+    } else if (metric == "precision") {
+      opts["average"] = "macro";
+    } else if (metric == "recall") {
+      opts["average"] = "macro";
+    } else if (metric == "roc_curve") {
+      opts["average"] = "default";
+    }
+    evaluators[metric] = get_evaluator_metric(metric_impl, opts);
+  }
+
+  // Traverse the predictions and labels in parallel.
+  auto callback = [&evaluators](size_t thread_idx,
+                                const std::shared_ptr<sframe_rows>& rows) {
+    for (const auto& row : *rows) {
+      for (const auto& metric_and_evaluator : evaluators) {
+        const evaluator_shared_ptr& evaluator = metric_and_evaluator.second;
+
+        // Feed the probability vector (index 1) or the maximum-probability
+        // label (index 2) into the evaluator.
+        size_t pred_col_idx = evaluator->is_prob_evaluator() ? 1 : 2;
+        evaluator->register_example(row[0], row[pred_col_idx], thread_idx);
+      }
+    }
+    return false;  // Never stop before all rows have been tallied.
+  };
+  data.materialize_to_callback(callback, turi::thread::cpu_count());
+
+  // Finalize each metric.
+  for (const auto& metric_and_evaluator : evaluators) {
+    result[metric_and_evaluator.first] =
+        metric_and_evaluator.second->get_metric();
+  }
+
+  return result;
+}
+
+variant_map_type compute_classifier_metrics(
+    gl_sframe data, std::string target_column_name, std::string metric,
+    gl_sarray predictions, std::map<std::string, flexible_type> opts)
+{
+  // Expand requested metric into list of actual metrics to compute.
+  std::vector<std::string> metrics = get_classifier_metrics(metric);
+
+  // Retrieve the list of classes.
+  // Note that "classes" is an "option" to guard against future alternate
+  // options, such as inferring labels from the target column or from dictionary
+  // keys in the prediction column.
+  auto opts_it = opts.find("classes");
+  if (opts_it == opts.end()) {
+    log_and_throw("Cannot compute classifier metrics without class labels.");
+  }
+  flex_list class_labels = opts_it->second;
+
+  // Convert predictions if necessary to canonical form: probability vectors.
+  predictions = get_prediction_probability_vectors(predictions, class_labels);
+
+  // Construct SFrame with just the targets and predicted probability vectors.
+  gl_sframe input = gl_sframe({
+      {"target", data[target_column_name]},
+      {"class_probs", predictions},
+  });
+
+  return compute_classifier_metrics_from_probability_vectors(
+      std::move(metrics), std::move(input), "target", "class_probs",
+      std::move(class_labels));
+}
+
+variant_map_type compute_object_detection_metrics(
+    gl_sframe data, std::string annotations_column_name,
+    std::string image_column_name, gl_sarray predictions,
+    std::map<std::string, flexible_type> opts)
+{
+  // Retrieve the list of classes.
+  // Note that "classes" is an "option" to guard against future alternate
+  // options, such as inferring labels from the target column or from dictionary
+  // keys in the prediction column.
+  auto opts_it = opts.find("classes");
+  if (opts_it == opts.end()) {
+    log_and_throw("Cannot compute classifier metrics without class labels.");
+  }
+  flex_list class_labels = opts_it->second;
+
+  // Create a data iterator.
+  object_detection::data_iterator::parameters iter_params;
+  iter_params.data =
+      data.select_columns({annotations_column_name, image_column_name});
+  iter_params.data.add_column(predictions);
+  iter_params.annotations_column_name = annotations_column_name;
+  iter_params.predictions_column_name = iter_params.data.column_names().back();
+  iter_params.image_column_name = image_column_name;
+  iter_params.class_labels = std::vector<std::string>(class_labels.begin(),
+                                                      class_labels.end());
+  iter_params.repeat = false;
+  object_detection::simple_data_iterator iter(iter_params);
+
+  // Create the evaluator.
+  object_detection::average_precision_calculator evaluator(class_labels);
+
+  // Iterate through the labeled data and predictions.
+  std::vector<neural_net::labeled_image> batch = iter.next_batch(32);
+  while (!batch.empty()) {
+    for (const neural_net::labeled_image& instance : batch) {
+      evaluator.add_row(instance.predictions, instance.annotations);
+    }
+
+    batch = iter.next_batch(32);
+  }
+
+  return evaluator.evaluate();
+}
+
 //////////////////////////////////////////////////////////////////////////////////////
 
 sframe precision_recall_by_user(
-    const sframe& validation_data,
-    const sframe& recommend_output,
+    const sframe& _validation_data,
+    const sframe& _recommend_output,
     const std::vector<size_t>& cutoffs) {
 
-  turi::timer timer;
+  timer timer;
   timer.start();
-  
-  std::map<std::string, flexible_type> opts 
-    = { {"sort_by_first_two_columns", true} };  
-  
-  const std::string& user_column = recommend_output.column_name(0);
-  const std::string& item_column = recommend_output.column_name(1);
 
-  std::map<std::string, v2::ml_column_mode> col_modes =
-  { {user_column, v2::ml_column_mode::CATEGORICAL}, 
-    {item_column, v2::ml_column_mode::CATEGORICAL} };
+  gl_sframe recommend_output(_recommend_output);
+  gl_sframe validation_data(_validation_data);
 
-  std::vector<std::pair<size_t, size_t> > recommendations;
-  std::shared_ptr<v2::ml_metadata> metadata; 
+  const auto& column_names = recommend_output.column_names();
 
-  {
-    // Map the recommend output first
-    v2::ml_data md_rec(opts);
-    md_rec.set_data(recommend_output.select_columns({user_column,item_column}), 
-                    "", {}, col_modes);
-
-    md_rec.fill(); 
-    metadata = md_rec.metadata();
-
-    // Dump this into a vector. 
-    recommendations.resize(md_rec.num_rows());
-
-    in_parallel([&](size_t thread_idx, size_t num_threads) { 
-      
-      for(auto it = md_rec.get_iterator(thread_idx, num_threads); !it.done(); ++it) { 
-        std::vector<v2::ml_data_entry> v; 
-        it.fill_observation(v); 
-      
-        recommendations[it.row_index()] = {v[0].index, v[1].index};
-      }
-    }); 
-
-    DASSERT_TRUE(std::is_sorted(recommendations.begin(), recommendations.end()));
+  if (column_names != recommend_output.column_names()) {
+    log_and_throw("Column names in test SFrame do not match recommender SFrame.");
   }
 
-  v2::ml_data md_val(metadata);
-  md_val.fill(validation_data.select_columns({user_column,item_column}));
-  
-  size_t num_threads = thread::cpu_count();
+  const std::string& user_column = column_names[0]; 
+  const std::string& item_column = column_names[1]; 
+
+  // First, index the columns.
+  gl_sframe indexed_validation_data_1, indexed_recommend_output_1;
+
+  auto user_indexer = std::make_shared<ml_data_internal::column_indexer>(
+      user_column, ml_column_mode::CATEGORICAL,
+      _recommend_output.column_type(user_column));
+
+  auto item_indexer = std::make_shared<ml_data_internal::column_indexer>(
+      item_column, ml_column_mode::CATEGORICAL,
+      _recommend_output.column_type(item_column));
+
+  user_indexer->initialize();
+  item_indexer->initialize();
+
+  std::function<flexible_type(const flexible_type&)> user_index_f =
+      [=](const flexible_type& f) -> flexible_type {
+    return user_indexer->map_value_to_index(thread::thread_id(), f);
+  };
+  std::function<flexible_type(const flexible_type&)> item_index_f =
+      [=](const flexible_type& f) -> flexible_type {
+    return item_indexer->map_value_to_index(thread::thread_id(), f);
+  };
+
+  indexed_validation_data_1[user_column] =
+      validation_data[user_column].apply(user_index_f, flex_type_enum::INTEGER);
+  indexed_validation_data_1[item_column] =
+      validation_data[item_column].apply(item_index_f, flex_type_enum::INTEGER);
+
+  sframe indexed_validation_data =
+      indexed_validation_data_1.materialize_to_sframe();
+
+  indexed_recommend_output_1[user_column] = recommend_output[user_column].apply(
+      user_index_f, flex_type_enum::INTEGER);
+  indexed_recommend_output_1[item_column] = recommend_output[item_column].apply(
+      item_index_f, flex_type_enum::INTEGER);
+
+  sframe indexed_recommend_output =
+      indexed_recommend_output_1.materialize_to_sframe();
+
+  user_indexer->finalize();
+  item_indexer->finalize();
+
+  size_t num_users = user_indexer->indexed_column_size();
+
+  // should preserve the order
+  indexed_column_groupby pred_ranks(
+      indexed_recommend_output.select_column(USER_COLUMN_INDEX),
+      indexed_recommend_output.select_column(ITEM_COLUMN_INDEX), false, false);
+
+  indexed_column_groupby val_ranks(
+      indexed_validation_data.select_column(USER_COLUMN_INDEX),
+      indexed_validation_data.select_column(ITEM_COLUMN_INDEX), false, false);
 
   sframe ret;
-  ret.open_for_write({user_column, "cutoff", "precision", "recall", "count"},
-                     {metadata->column_type(user_column), 
-                     flex_type_enum::INTEGER, 
-                     flex_type_enum::FLOAT,
-                     flex_type_enum::FLOAT, 
-                     flex_type_enum::INTEGER},
-                     "", num_threads);
+  ret.open_for_write(
+      {user_column, "cutoff", "precision", "recall", "count"},
+      {user_indexer->column_type(), flex_type_enum::INTEGER,
+       flex_type_enum::FLOAT, flex_type_enum::FLOAT, flex_type_enum::INTEGER});
+
+  size_t num_segments = ret.num_segments();
 
 
-  typedef decltype(ret.get_output_iterator(0)) out_iter_type; 
-  std::vector<out_iter_type> output_iterators(num_threads);
-  
-  std::vector<std::vector<flexible_type> > out_vv(num_threads);   
+  parallel_for(0, num_segments, [&](size_t sidx) {
 
-  auto add_to_output = [&](
-    size_t thread_idx,
-    size_t user, 
-    const std::vector<size_t>& pr, const std::vector<size_t>& vr) { 
+    size_t start_idx = (sidx * num_users) / num_segments;
+    size_t end_idx = ((sidx + 1) * num_users) / num_segments;
 
-    // Only record ones that are non-empty in the predictions.
-    if(pr.empty()) {
-      return; 
-    }
-  
-    auto& it_out = output_iterators[thread_idx]; 
-    auto& out_v = out_vv[thread_idx];
+    auto it_out = ret.get_output_iterator(sidx);
+    std::vector<flexible_type> out_v;
 
-    const std::vector<std::pair<double, double> > prv =
-        turi::recsys::precision_and_recall(vr, pr, cutoffs);
+    for (size_t i = start_idx; i < end_idx; ++i) {
+      const std::vector<size_t>& vr = val_ranks.dest_group(i);
+      const std::vector<size_t>& pr = pred_ranks.dest_group(i);
 
-    for(size_t j = 0; j < cutoffs.size(); ++j, ++it_out) {
-      out_v = {metadata->indexer(0)->map_index_to_value(user), cutoffs[j], 
-        prv[j].first, prv[j].second, vr.size()};
-      *it_out = out_v;
-    }
-  };
-  
-  // We need to record all the recommendations that were given that have 
-  // no presence in 
-  std::vector<int> recommendations_processed(metadata->index_size(0), 0);
-  atomic<size_t> num_users_processed = 0; 
+      const std::vector<std::pair<double, double>> prv =
+          recsys::precision_and_recall(vr, pr, cutoffs);
 
-  in_parallel([&](size_t thread_idx, size_t num_threads) { 
-  
-    // Set the output iterator 
-    output_iterators[thread_idx] = ret.get_output_iterator(thread_idx);
-
-    // do squirrels barf nuts?
-    auto val_it = md_val.get_block_iterator(thread_idx, num_threads);
-     
-    std::vector<v2::ml_data_entry> v;
-    std::vector<size_t> vr, pr;  
-
-    if(val_it.done()) { return; }
-      
-    val_it.fill_observation(v);
-    size_t user = v[0].index;
-
-    // Find the starting tracking iterator for this place
-    auto rec_it = std::lower_bound(
-       recommendations.begin(), 
-       recommendations.end(), std::pair<size_t, size_t>{user, 0});
-
-    while(!val_it.done()) { 
-      
-      vr.clear();
-
-      val_it.fill_observation(v);
-      user = v[0].index;
-      vr.push_back(v[1].index); 
-      ++val_it; 
-
-      for(; !val_it.done() && !val_it.is_start_of_new_block(); ++val_it) { 
-        val_it.fill_observation(v); 
-        DASSERT_EQ(v[0].index, user); 
-        vr.push_back(v[1].index); 
+      for (size_t j = 0; j < cutoffs.size(); ++j, ++it_out) {
+        out_v = {user_indexer->map_index_to_value(i), cutoffs[j], prv[j].first,
+                 prv[j].second, vr.size()};
+        *it_out = out_v;
       }
-
-      // Find the starting location of the recommendations for this user
-      while(rec_it != recommendations.end() && rec_it->first < user) {
-         ++rec_it; 
-      }
-
-      // Now, dump them into the predictions.
-      pr.clear(); 
-
-      // Copy the recommended items into a buffer. 
-      while(rec_it != recommendations.end() && rec_it->first == user) { 
-        pr.push_back(rec_it->second);
-        ++rec_it;
-      }
-
-      // Record that it's been processed.
-      DASSERT_LT(user, recommendations_processed.size()); 
-      DASSERT_EQ(recommendations_processed[user], 0); 
-      recommendations_processed[user] = 1;
-      ++num_users_processed;
-    
-      add_to_output(thread_idx, user, pr, vr); 
     }
   });
 
-  // Have we been able to process everything?  If not, add in the leftovers.
-  if(num_users_processed < recommendations_processed.size()) { 
-  
-    in_parallel([&](size_t thread_idx, size_t num_threads) { 
- 
-       // Block it up by threads 
-      size_t start_idx = (thread_idx * recommendations_processed.size()) / num_threads;
-      size_t end_idx   = ((thread_idx+1) * recommendations_processed.size()) / num_threads;
-
-      std::vector<size_t> pr; 
-
-      for(size_t user = start_idx; user < end_idx; ++user) { 
-        
-        if(recommendations_processed[user]) {
-          continue;
-        }
-        
-        // Find these recommendations in the block.
-        auto rec_it = std::lower_bound(
-           recommendations.begin(), 
-           recommendations.end(), std::pair<size_t, size_t>{user, 0});
-
-        // The only way the above iterator would have missed it is if it's here, 
-        // but not in the validation set.
-        DASSERT_EQ(rec_it->first, user); 
-
-        // Copy the recommended items into a buffer. 
-        while(rec_it != recommendations.end() && rec_it->first == user) { 
-          pr.push_back(rec_it->second);
-          ++rec_it;
-        }
-
-        add_to_output(thread_idx, user, pr, {}); 
-      }
-    }); 
-  }
-
   ret.close();
 
-  return ret;
+  return ret;  
 }
-
 
 }
 }

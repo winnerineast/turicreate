@@ -13,6 +13,7 @@
 #include <sframe/sframe_rows.hpp>
 #include <sframe/group_aggregate_value.hpp>
 #include <flexible_type/flexible_type.hpp>
+#include <unity/lib/visualization/plot.hpp>
 
 namespace turi {
 /**************************************************************************/
@@ -237,6 +238,8 @@ class gl_sarray {
   gl_sarray(const std::vector<flexible_type>& values, 
             flex_type_enum dtype = flex_type_enum::UNDEFINED);
 
+  virtual ~gl_sarray(); 
+
   void construct_from_vector(const std::vector<flexible_type>& values,
             flex_type_enum dtype = flex_type_enum::UNDEFINED);
 
@@ -291,8 +294,15 @@ class gl_sarray {
    * \endcode
    */
   static gl_sarray from_sequence(size_t start, size_t end, bool reverse=false);
-
+  
   /**
+   * Constructs an SArray from a json record files.
+   *
+   * A json record file contains an array of dictionaries.
+   * Resultant SArray is of dictionary type.
+   */
+  static gl_sarray read_json(const std::string& url); 
+
   /**************************************************************************/
   /*                                                                        */
   /*                        Implicit Type Converters                        */
@@ -647,7 +657,7 @@ class gl_sarray {
    *
    *  \see is_materialized
    */
-  void materialize();
+  void materialize() const;
 
   /**
    * Returns whether or not the sarray has been materialized.
@@ -1018,7 +1028,28 @@ class gl_sarray {
    * [1,3,6,9]
    * \endcode
    */
-  gl_sarray sample(double fraction, size_t seed) const;
+  gl_sarray sample(double fraction, size_t seed, bool exact=false) const;
+
+  /**
+   * Returns an SArray with a hash of each element. seed can be used to change 
+   * the hash function to allow this method to be used for random number generation.
+   * 
+   * \param seed Defaults to 0. Can be changed to different values to get different hash results.
+   *
+   * Example:
+   * \code
+   * sa = gl_sarray::from_sequence(0,10);
+   * std::cout << sa.hash(123)
+   * \endcode
+   * 
+   * Produces output:
+   * \code{.txt}
+   * dtype: int
+   * Rows: 10
+   * [-2176393851141330893, 7600995152976636137, -5571280844667425574, -4385410391720336496, -4446257658862464208, -7571182417602171808, 3644372782970789199, 3084542717492096231, 4758268028978242780, -6520852338875851008]
+   * \endcode
+   */
+  gl_sarray hash(size_t seed = 0) const;
 
   /**
    * Return true if every element of the \ref gl_sarray evaluates to true. For
@@ -1051,6 +1082,9 @@ class gl_sarray {
    * 
    * \see any
    */
+
+ 
+  
   bool all() const;
 
   /**
@@ -1712,7 +1746,7 @@ class gl_sarray {
    */
   gl_sarray subslice(flexible_type start = FLEX_UNDEFINED, 
                      flexible_type stop = FLEX_UNDEFINED, 
-                     flexible_type step = FLEX_UNDEFINED);
+                     flexible_type step = FLEX_UNDEFINED) const;
   
 /**
  *
@@ -1815,11 +1849,15 @@ class gl_sarray {
                                   ssize_t end,
                                   size_t min_observations=size_t(-1)) const;
 
-
   /**
    * Show a visualization of the SArray.
    */
-  void show(const std::string& path_to_client, const std::string& title, const std::string& xlabel, const std::string& ylabel) const;
+  void show(const std::string& path_to_client, const flexible_type& title, const flexible_type& xlabel, const flexible_type& ylabel) const;
+
+  /**
+   * Return a visualization of the SArray.
+   */
+  std::shared_ptr<visualization::Plot> plot(const flexible_type& title, const flexible_type& xlabel, const flexible_type& ylabel) const;
 
   /**
    * \internal

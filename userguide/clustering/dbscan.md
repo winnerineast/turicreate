@@ -50,7 +50,7 @@ advantages:
 
 To illustrate the basic usage of DBSCAN and how the results can differ from
 K-means, we simulate non-spherical, low-dimensional data using the scikit-learn
-datasets module.
+datasets module.[<sup>1</sup>](../datasets.md)
 
 ```python
 import turicreate as tc
@@ -157,7 +157,7 @@ ax.scatter(sf['X1.0'][noise_mask], sf['X1.1'][noise_mask], s=40, alpha=0.7,
 fig.show()
 ```
 
-![dbscan_mooons](images/dbscan_moons.png)
+![dbscan_moons](images/dbscan_moons.png)
 
 For comparison, K-means cannot identify the true clusters in this case, even
 when we tell the model the correct number of clusters.
@@ -173,7 +173,7 @@ ax.scatter(sf['X1.0'], sf['X1.1'], s=80, alpha=0.9, c=sf['kmeans_id'],
 fig.show()
 ```
 
-![kmeans_mooons](images/kmeans_moons.png)
+![kmeans_moons](images/kmeans_moons.png)
 
 
 #### Setting key parameters
@@ -217,7 +217,7 @@ sf.save('wikipedia.sframe')
 This particular subset of wikipedia has over 72,000 documents; in the interest
 of speed for the demo we sample 20% of this. We also preprocess the data by
 constructing a bag-of-words representation for each article and trimming out
-stopwords. See Turi Create's [text analytics](https://apple.github.io/turicreate/docs/api/turicreate.toolkits.text_analytics.html) and
+stop words. See Turi Create's [text analytics](https://apple.github.io/turicreate/docs/api/turicreate.toolkits.text_analytics.html) and
 [SArray](https://apple.github.io/turicreate/docs/api/generated/turicreate.SArray.html)
 documentation for more details.
 
@@ -225,7 +225,7 @@ documentation for more details.
 sf_sample = sf.sample(0.2)
 sf_sample['word_bag'] = tc.text_analytics.count_words(sf_sample['X1'])
 sf_sample['word_bag'] = sf_sample['word_bag'].dict_trim_by_keys(
-                                    tc.text_analytics.stopwords(), exclude=True)
+                                    tc.text_analytics.stop_words(), exclude=True)
 ```
 
 With our trimmed bag of words representation, Jaccard distance is a natural
@@ -350,7 +350,7 @@ There are two important caveats regarding distance functions in DBSCAN:
 
 #### References and more information
 
-- Ester, M., et al. (1996) [A Density-Based Algorithm for Discovering Clustersin
+- Ester, M., et al. (1996) [A Density-Based Algorithm for Discovering Clusters in
   Large Spatial Databases with
   Noise](http://www.aaai.org/Papers/KDD/1996/KDD96-037.pdf). In Proceedings of the
   Second International Conference on Knowledge Discovery and Data Mining. pp.

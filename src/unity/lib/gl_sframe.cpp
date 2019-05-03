@@ -20,7 +20,6 @@
 
 namespace turi {
 
-static turi::mutex reader_shared_ptr_lock;
 /**
  * Constructs a dataframe from data represented a collection of 
  * columns of flexible_type.
@@ -196,7 +195,7 @@ gl_sframe& gl_sframe::operator=(const gl_sframe& other) {
 
 
 gl_sframe& gl_sframe::operator=(gl_sframe&& other) {
-  m_sframe = std::move(other.get_proxy());
+  m_sframe = other.get_proxy();
   return *this;
 }
 
@@ -266,9 +265,8 @@ std::vector<flexible_type> gl_sframe::operator[](int64_t i) {
   if (i < 0 || (size_t)i >= size()) {
     throw std::string("Index out of range");
   }
-  ensure_has_sframe_reader();
   std::vector<std::vector<flexible_type> > rows(1);
-  size_t rows_read  = m_sframe_reader->read_rows(i, i + 1, rows);
+  size_t rows_read  = get_sframe_reader()->read_rows(i, i + 1, rows);
   ASSERT_TRUE(rows.size() > 0);
   ASSERT_EQ(rows_read, 1);
   return rows[0];
@@ -278,9 +276,8 @@ std::vector<flexible_type> gl_sframe::operator[](int64_t i) const {
   if (i < 0 || (size_t)i >= size()) {
     throw std::string("Index out of range");
   }
-  ensure_has_sframe_reader();
   std::vector<std::vector<flexible_type> > rows(1);
-  size_t rows_read  = m_sframe_reader->read_rows(i, i + 1, rows);
+  size_t rows_read  = get_sframe_reader()->read_rows(i, i + 1, rows);
   ASSERT_TRUE(rows.size() > 0);
   ASSERT_EQ(rows_read, 1);
   return rows[0];
@@ -369,8 +366,7 @@ gl_sframe_range gl_sframe::range_iterator(size_t start, size_t end) const {
         (start == 0 && end == 0))) {
     throw std::string("Index out of range");
   }
-  ensure_has_sframe_reader();
-  return gl_sframe_range(m_sframe_reader, start, end);
+  return gl_sframe_range(get_sframe_reader(), start, end);
 }
 
 /**************************************************************************/
@@ -403,8 +399,7 @@ void gl_sframe::save(const std::string& _path, const std::string& _format) const
   std::string format = _format;
   // fill format is not filled
   if (format == "") {
-    if (boost::algorithm::ends_with(format, ".csv") ||
-        boost::algorithm::ends_with(format, ".csv.gz")) {
+    if (boost::algorithm::ends_with(path, ".csv") || boost::algorithm::ends_with(path, ".csv.gz")) {
       format = "csv";
     } else {
       format = "binary";
@@ -412,10 +407,10 @@ void gl_sframe::save(const std::string& _path, const std::string& _format) const
   }
 
   // append .csv if is csv
-  if (format == "csv" &&
-      !(boost::algorithm::ends_with(format, ".csv") ||
-        boost::algorithm::ends_with(format, ".csv.gz"))) {
-    path = path + ".csv";    
+  if (format == "csv") {
+    if(!(boost::algorithm::ends_with(path, ".csv") || boost::algorithm::ends_with(path, ".csv.gz"))) {
+      path = path + ".csv";
+    }
   } else if (format != "binary") {
     throw std::string("Invalid format. Supported formats are \'csv\' and \'binary\'");
   }
@@ -443,14 +438,8 @@ void gl_sframe::instantiate_new() {
   m_sframe = std::make_shared<unity_sframe>();
 }
 
-void gl_sframe::ensure_has_sframe_reader() const {
-  if (!m_sframe_reader) {
-    std::lock_guard<mutex> guard(reader_shared_ptr_lock);
-    if (!m_sframe_reader) {
-      m_sframe_reader =
-          std::move(get_proxy()->get_underlying_sframe()->get_reader());
-    }
-  }
+std::shared_ptr<sframe_reader> gl_sframe::get_sframe_reader() const {
+  return get_proxy()->get_underlying_sframe()->get_reader();
 }
 
 std::vector<std::string> gl_sframe::column_names() const {
@@ -473,15 +462,15 @@ gl_sarray gl_sframe::apply(std::function<flexible_type(const sframe_rows::row&)>
 gl_sframe gl_sframe::sample(double fraction) const {
   return get_proxy()->sample(fraction, time(NULL));
 }
-gl_sframe gl_sframe::sample(double fraction, size_t seed) const {
-  return get_proxy()->sample(fraction, seed);
+gl_sframe gl_sframe::sample(double fraction, size_t seed, bool exact) const {
+  return get_proxy()->sample(fraction, seed, exact);
 }
 std::pair<gl_sframe, gl_sframe> gl_sframe::random_split(double fraction) const {
   return random_split(fraction, time(NULL));
 }
 
-std::pair<gl_sframe, gl_sframe> gl_sframe::random_split(double fraction, size_t seed) const {
-  auto list = get_proxy()->random_split(fraction, seed);
+std::pair<gl_sframe, gl_sframe> gl_sframe::random_split(double fraction, size_t seed, bool exact) const {
+  auto list = get_proxy()->random_split(fraction, seed, exact);
   std::pair<gl_sframe, gl_sframe> ret;
   ASSERT_EQ(list.size(), 2);
   auto iter = list.begin(); ret.first = (*iter);
@@ -771,9 +760,6 @@ gl_sframe gl_sframe::unpack(const std::string& unpack_column,
   if (colnames_set.count(unpack_column) == 0) {
     throw std::string("column \'" + unpack_column + "\' does not exist in current SFrame");
   }
-  if (column_name_prefix == "") {
-    column_name_prefix = unpack_column;
-  }
 
   gl_sframe new_sf = select_column(unpack_column).
       unpack(column_name_prefix, column_types, na_value, limit);
@@ -1017,10 +1003,10 @@ std::ostream& operator<<(std::ostream& out, const gl_sframe& other) {
 /**************************************************************************/
 
 gl_sframe_range::gl_sframe_range(
-    std::shared_ptr<sframe_reader> m_sframe_reader,
+    std::shared_ptr<sframe_reader> _sframe_reader,
     size_t start, size_t end) {
   m_sframe_reader_buffer = 
-      std::make_shared<sframe_reader_buffer>(m_sframe_reader, start, end);
+      std::make_shared<sframe_reader_buffer>(_sframe_reader, start, end);
   // load the first value if available
   if (m_sframe_reader_buffer->has_next()) {
     m_sframe_reader_buffer->next();
@@ -1066,6 +1052,15 @@ const gl_sframe_range::type& gl_sframe_range::iterator::dereference() const {
 /*                                                                        */
 /**************************************************************************/
 
+gl_sarray_reference::gl_sarray_reference(gl_sarray_reference&& other)
+  : m_sf(other.m_sf), m_column_name(other.m_column_name) { }
+
+gl_sarray_reference& gl_sarray_reference::operator=(gl_sarray_reference&& other) {
+  *this = static_cast<gl_sarray_reference&>(other);
+  return *this;
+}
+
+
 gl_sarray_reference::gl_sarray_reference(gl_sframe& sf, std::string column_name)
   : m_sf(sf), m_column_name(column_name) { } 
 
@@ -1097,6 +1092,10 @@ std::shared_ptr<unity_sarray> gl_sarray_reference::get_proxy() const {
 /*                    const_gl_sarray_reference                           */
 /*                                                                        */
 /**************************************************************************/
+
+const_gl_sarray_reference::const_gl_sarray_reference(const_gl_sarray_reference&& other)
+  : m_sf(other.m_sf), m_column_name(other.m_column_name) { }
+
 
 const_gl_sarray_reference::const_gl_sarray_reference(const gl_sframe& sf, std::string column_name)
   : m_sf(sf), m_column_name(column_name) { } 
@@ -1160,6 +1159,10 @@ gl_sframe gl_sframe_writer_impl::close() {
 
 void gl_sframe::show(const std::string& path_to_client) const {
   get_proxy()->show(path_to_client);
+}
+
+std::shared_ptr<model_base> gl_sframe::plot() const {
+  return get_proxy()->plot();
 }
 
 /**************************************************************************/

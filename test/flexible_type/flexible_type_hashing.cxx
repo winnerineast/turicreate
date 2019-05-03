@@ -48,9 +48,9 @@ void stress_test_flex_type(std::function<HT(flexible_type)> hf) {
   hash_tracker<HT, flexible_type> htest;
 
   // Do several things to make sure we don't have collisions
-  for(long i1 = 0; i1 < K; ++i1) {
-    for(long i2 = 0; i2 < K; ++i2) {
-      for(long i3 = 0; i3 < K; ++i3) {
+  for(long i1 = 0; i1 < static_cast<int64_t>(K); ++i1) {
+    for(long i2 = 0; i2 < static_cast<int64_t>(K); ++i2) {
+      for(long i3 = 0; i3 < static_cast<int64_t>(K); ++i3) {
         {
           flexible_type k = std::vector<flexible_type>{flexible_type(i1),
                                                        flexible_type(i2),
@@ -177,6 +177,12 @@ struct flexible_type_hash_test  {
     stress_test_flex_type<uint128_t>([](flexible_type f) {return f.hash128(); });
   }
 
+  void test_nd_vec_hashability() {
+    flex_nd_vec vec({0,5,1,6,2,7,3,8,4,9},
+                    {2,5},
+                    {1,2});
+    flexible_type(vec).hash();
+  }
 };
 
 BOOST_FIXTURE_TEST_SUITE(_flexible_type_hash_test, flexible_type_hash_test)

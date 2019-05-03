@@ -62,7 +62,9 @@
 #include <logger/backtrace.hpp>
 
 #include <boost/typeof/typeof.hpp>
+
 #include <util/code_optimization.hpp>
+#include <util/sys_util.hpp>
 
 extern void __print_back_trace();
 
@@ -194,40 +196,40 @@ extern void __print_back_trace();
 // controlled by NDEBUG, so the check will be executed regardless of
 // compilation mode.  Therefore, it is safe to do things like:
 //    __CHECK(fp->Write(x) == 4)
-#define __CHECK(condition)                                                \
-  do {                                                                  \
-    if (UNLIKELY(!(condition))) {                                       \
-      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {    \
-      std::ostringstream ss;                                            \
-      ss << "Check failed (" << __FILE__ << ":" << __LINE__ << "): "    \
-      << #condition  << std::endl;                                      \
-      logstream(LOG_ERROR) << ss.str();                                 \
-      __print_back_trace();                                             \
-      LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                     \
-    };                                                                  \
-    throw_error();                                                      \
-  }                                                                     \
-  } while(0)
-
+#define __CHECK(condition)                                           \
+  do {                                                               \
+    if (UNLIKELY(!(condition))) {                                    \
+      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) { \
+        std::ostringstream ss;                                       \
+        ss << "Check failed (" << __FILE__ << ":" << __LINE__        \
+           << "): " << #condition << std::endl;                      \
+        logstream(LOG_ERROR) << ss.str();                            \
+        __print_back_trace();                                        \
+        LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                    \
+      };                                                             \
+      throw_error();                                                 \
+      TURI_BUILTIN_UNREACHABLE();                                    \
+    }                                                                \
+  } while (0)
 
 // This prints errno as well.  errno is the posix defined last error
 // number. See errno.h
-#define __PCHECK(condition)                                               \
-  do {                                                                  \
-    if (UNLIKELY(!(condition))) {                                       \
-      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {    \
-      const int _PCHECK_err_no_ = errno;                                \
-      std::ostringstream ss;                                            \
-      ss << "Assertion failed (" << __FILE__ << ":" << __LINE__ << "): " \
-         << #condition << ": "                                          \
-         << strerror(err_no) << std::endl;                              \
-      logstream(LOG_ERROR) << ss.str();                                 \
-      __print_back_trace();                                             \
-      LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                     \
-    };                                                                  \
-    throw_error();                                                      \
-  }                                                                     \
-  } while(0)
+#define __PCHECK(condition)                                                 \
+  do {                                                                      \
+    if (UNLIKELY(!(condition))) {                                           \
+      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {        \
+        const int _PCHECK_err_no_ = errno;                                  \
+        std::ostringstream ss;                                              \
+        ss << "Assertion failed (" << __FILE__ << ":" << __LINE__           \
+           << "): " << #condition << ": " << strerror(err_no) << std::endl; \
+        logstream(LOG_ERROR) << ss.str();                                   \
+        __print_back_trace();                                               \
+        LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                           \
+      };                                                                    \
+      throw_error();                                                        \
+      TURI_BUILTIN_UNREACHABLE();                                           \
+    }                                                                       \
+  } while (0)
 
 // Helper macro for binary operators; prints the two values on error
 // Don't use this macro directly in your code, use __CHECK_EQ et al below
@@ -235,51 +237,48 @@ extern void __print_back_trace();
 // WARNING: These don't compile correctly if one of the arguments is a pointer
 // and the other is NULL. To work around this, simply static_cast NULL to the
 // type of the desired pointer.
-#define __CHECK_OP(op, val1, val2)                                        \
-  do {                                                                  \
-    const auto _CHECK_OP_v1_ = val1;                                    \
-    const auto _CHECK_OP_v2_ = val2;                                    \
-    if (__builtin_expect(!((_CHECK_OP_v1_) op                           \
-                           (decltype(val1))(_CHECK_OP_v2_)), 0)) {      \
-      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {    \
-      std::ostringstream ss;                                            \
-      ss << "Assertion failed: (" << __FILE__ << ":" << __LINE__ << "): " \
-         << #val1 << #op << #val2                                       \
-         << "  ["                                                       \
-         << _CHECK_OP_v1_                                               \
-         << ' ' << #op << ' '                                           \
-         << _CHECK_OP_v2_ << "]" << std::endl;                          \
-      logstream(LOG_ERROR) << ss.str();                                 \
-      __print_back_trace();                                             \
-      LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                     \
-    };                                                                  \
-    throw_error();                                                      \
-  }                                                                   \
-  } while(0)
+#define __CHECK_OP(op, val1, val2)                                            \
+  do {                                                                        \
+    const auto _CHECK_OP_v1_ = val1;                                          \
+    const auto _CHECK_OP_v2_ = val2;                                          \
+    if (__builtin_expect(!((_CHECK_OP_v1_)op(decltype(val1))(_CHECK_OP_v2_)), \
+                         0)) {                                                \
+      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {          \
+        std::ostringstream ss;                                                \
+        ss << "Assertion failed: (" << __FILE__ << ":" << __LINE__            \
+           << "): " << #val1 << #op << #val2 << "  [" << _CHECK_OP_v1_ << ' ' \
+           << #op << ' ' << _CHECK_OP_v2_ << "]" << std::endl;                \
+        logstream(LOG_ERROR) << ss.str();                                     \
+        __print_back_trace();                                                 \
+        LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                             \
+      };                                                                      \
+      throw_error();                                                          \
+      TURI_BUILTIN_UNREACHABLE();                                             \
+    }                                                                         \
+  } while (0)
 
-#define __CHECK_DELTA(val1, val2, delta)                                  \
-  do {                                                                  \
-    const double _CHECK_OP_v1_ = val1;                                  \
-    const double _CHECK_OP_v2_ = val2;                                  \
-    const double _CHECK_OP_delta_ = delta;                              \
-    if (__builtin_expect(!( abs( (_CHECK_OP_v1_) - (_CHECK_OP_v2_)) <= _CHECK_OP_delta_), 0)) { \
-      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {    \
-      std::ostringstream ss;                                            \
-      ss << "Assertion failed: (" << __FILE__ << ":" << __LINE__ << "): " \
-         << "abs(" << #val1 << " - " << #val2                           \
-         << ") <= " << #delta << ". ["                                  \
-         << "abs(" << _CHECK_OP_v2_ << " - " << _CHECK_OP_v1_           \
-         << ") > " << _CHECK_OP_delta_ << "]" << std::endl;             \
-      logstream(LOG_ERROR) << ss.str();                                 \
-      __print_back_trace();                                             \
-      LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                     \
-    };                                                                  \
-    throw_error();                                                      \
-    }                                                                   \
-  } while(0)
-
-
-
+#define __CHECK_DELTA(val1, val2, delta)                                      \
+  do {                                                                        \
+    const double _CHECK_OP_v1_ = val1;                                        \
+    const double _CHECK_OP_v2_ = val2;                                        \
+    const double _CHECK_OP_delta_ = delta;                                    \
+    if (__builtin_expect(                                                     \
+            !(std::abs((_CHECK_OP_v1_) - (_CHECK_OP_v2_)) <= _CHECK_OP_delta_),\
+            0)) {                                                             \
+      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {          \
+        std::ostringstream ss;                                                \
+        ss << "Assertion failed: (" << __FILE__ << ":" << __LINE__ << "): "   \
+           << "abs(" << #val1 << " - " << #val2 << ") <= " << #delta << ". [" \
+           << "abs(" << _CHECK_OP_v2_ << " - " << _CHECK_OP_v1_ << ") > "     \
+           << _CHECK_OP_delta_ << "]" << std::endl;                           \
+        logstream(LOG_ERROR) << ss.str();                                     \
+        __print_back_trace();                                                 \
+        LOGGED_TURI_LOGGER_FAIL_METHOD(ss.str());                             \
+      };                                                                      \
+      throw_error();                                                          \
+      TURI_BUILTIN_UNREACHABLE();                                             \
+    }                                                                         \
+  } while (0)
 
 #define __CHECK_EQ(val1, val2) __CHECK_OP(==, val1, val2)
 #define __CHECK_NE(val1, val2) __CHECK_OP(!=, val1, val2)
@@ -311,20 +310,27 @@ extern void __print_back_trace();
 #define ASSERT_FALSE(cond)    EXPECT_FALSE(cond)
 #define ASSERT_STREQ(a, b)    EXPECT_STREQ(a, b)
 
+#define ASSERT_UNREACHABLE()  { EXPECT_TRUE(false); assert(false); TURI_BUILTIN_UNREACHABLE(); }
 
-#define ASSERT_MSG(condition, fmt, ...)                                 \
-  do {                                                                  \
-    if (__builtin_expect(!(condition), 0)) {                            \
-      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {    \
-      logstream(LOG_ERROR)                                              \
-        << "Check failed: " << #condition << ":\n";                     \
-      logger(LOG_ERROR, fmt, ##__VA_ARGS__);                            \
-      __print_back_trace();                                             \
-      TURI_LOGGER_FAIL_METHOD("assertion failure");                 \
-    };                                                                  \
-    throw_error();                                                      \
-    }                                                                   \
-  } while(0)
+// Convenience wrapper since this is a very common case.
+#define AU() { ASSERT_UNREACHABLE(); }
+
+#define ASSERT_MSG(condition, fmt, ...)                                  \
+  do {                                                                   \
+    if (__builtin_expect(!(condition), 0)) {                             \
+      auto throw_error = [&]() GL_GCC_ONLY(GL_COLD_NOINLINE_ERROR) {     \
+        logstream(LOG_ERROR) << "Check failed: " << #condition << ":\n"; \
+        std::ostringstream ss;                                           \
+        ss << "Assertion Failure: " << #condition << ": " << fmt;        \
+        logger(LOG_ERROR, fmt, ##__VA_ARGS__);                           \
+        __print_back_trace();                                            \
+        TURI_LOGGER_FAIL_METHOD(ss.str().c_str());                       \
+        ASSERT_UNREACHABLE();                                            \
+      };                                                                 \
+      throw_error();                                                     \
+      TURI_BUILTIN_UNREACHABLE();                                        \
+    }                                                                    \
+  } while (0)
 
 // Used for (libc) functions that return -1 and set errno
 #define __CHECK_ERR(invocation)  __PCHECK((invocation) != -1)
@@ -370,15 +376,7 @@ extern void __print_back_trace();
 
 
 #define DASSERT_MSG(condition, fmt, ...)                                \
-  do {                                                                  \
-    if (__builtin_expect(!(condition), 0)) {                            \
-      logstream(LOG_ERROR)                                              \
-        << "Check failed: " << #condition << ":\n";                     \
-      logger(LOG_ERROR, fmt, ##__VA_ARGS__);                            \
-      __print_back_trace();                                             \
-      TURI_LOGGER_FAIL_METHOD("assertion failure");                    \
-    }                                                                   \
-  } while(0)
+  ASSERT_MSG(condition, fmt, ##__VA_ARGS__)
 
 #endif
 
@@ -386,6 +384,26 @@ extern void __print_back_trace();
 #ifdef ERROR
 #undef ERROR      // may conflict with ERROR macro on windows
 #endif
+
+#define BOOST_ENABLE_ASSERT_HANDLER
+
+namespace boost {
+  inline void assertion_failed(
+    char const * expr, char const * function, char const * file, long line) {
+
+    std::cerr << "Boost assertion failed: " << expr << std::endl;
+    ASSERT_UNREACHABLE();
+  }
+
+  inline void assertion_failed_msg(
+    char const * expr, char const * msg, char const * function,
+    char const * file, long line) {
+
+    std::cerr << "Boost assertion failed: " << expr << std::endl;
+    std::cerr << "Boost assertion message: " << msg << std::endl;
+    ASSERT_UNREACHABLE();
+  }
+}
 
 #endif // _LOGGING_H_
 

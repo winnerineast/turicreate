@@ -57,8 +57,8 @@ GENERATE_INTERFACE_AND_PROXY(unity_sarray_base, unity_sarray_proxy,
       (std::shared_ptr<unity_sarray_base>, drop_missing_values, )
       (std::shared_ptr<unity_sarray_base>, fill_missing_values, (flexible_type))
       (std::shared_ptr<unity_sarray_base>, clip, (flexible_type)(flexible_type))
-      (std::shared_ptr<unity_sarray_base>, sample, (float)(int))
-      (std::shared_ptr<unity_sarray_base>, hash, (int))
+      (std::shared_ptr<unity_sarray_base>, sample, (float)(int)(bool))
+      (std::shared_ptr<unity_sarray_base>, hash, (uint64_t))
       (std::shared_ptr<unity_sarray_base>, tail, (size_t))
       (std::vector<flexible_type>, _tail, (size_t))
       (void, begin_iterator, )
@@ -87,9 +87,9 @@ GENERATE_INTERFACE_AND_PROXY(unity_sarray_base, unity_sarray_proxy,
       (std::shared_ptr<unity_sarray_base>, builtin_cumulative_aggregate,(const std::string&))
       (std::shared_ptr<unity_sarray_base>, ternary_operator,(std::shared_ptr<unity_sarray_base>)(std::shared_ptr<unity_sarray_base>))
       (std::shared_ptr<unity_sarray_base>, to_const,(const flexible_type&)(flex_type_enum))
-      (void, show, (const std::string&)(const std::string&)(const std::string&)(const std::string&))
+      (void, show, (const std::string&)(const flexible_type&)(const flexible_type&)(const flexible_type&))
+      (std::shared_ptr<model_base>, plot,(const flexible_type&)(const flexible_type&)(const flexible_type&))
     )
 } // namespace turi
 #endif // TURI_UNITY_SARRAY_INTERFACE_HPP
 #include <unity/lib/api/unity_sframe_interface.hpp>
-

@@ -6,8 +6,9 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
-import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
 from turicreate.util import _raise_error_if_not_of_type
 
@@ -205,7 +206,7 @@ def create(graph, label_field,
     If given an :class:`~turicreate.SGraph` ``g``, we can create
     a :class:`~turicreate.label_propagation.LabelPropagationModel` as follows:
 
-    >>> g = turicreate.load_graph('http://snap.stanford.edu/data/email-Enron.txt.gz',
+    >>> g = turicreate.load_sgraph('http://snap.stanford.edu/data/email-Enron.txt.gz',
     ...                         format='snap')
     # Initialize random classes for a subset of vertices
     # Leave the unobserved vertices with None label.
@@ -246,6 +247,8 @@ def create(graph, label_field,
     --------
     LabelPropagationModel
     """
+    from turicreate._cython.cy_server import QuietProgress
+
     _raise_error_if_not_of_type(label_field, str)
     _raise_error_if_not_of_type(weight_field, str)
 
@@ -264,6 +267,8 @@ def create(graph, label_field,
             'single_precision': _single_precision,
             'graph': graph.__proxy__}
 
-    params = _main.run('label_propagation', opts, verbose)
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.label_propagation.create(opts)
+
     model = params['model']
     return LabelPropagationModel(model)

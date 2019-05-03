@@ -8,22 +8,24 @@
 // ML Data
 #include <ml_data/ml_data.hpp>
 
+// Core ML
+#include <unity/toolkits/coreml_export/linear_models_exporter.hpp>
+
 // Toolkits
-#include <toolkits/supervised_learning/linear_regression_opt_interface.hpp>
-#include <toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
+#include <unity/toolkits/supervised_learning/linear_regression_opt_interface.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
 
 // Solvers
 #include <optimization/utils.hpp>
 #include <optimization/newton_method-inl.hpp>
 #include <optimization/gradient_descent-inl.hpp>
 #include <optimization/accelerated_gradient-inl.hpp>
-#include <optimization/lbfgs-inl.hpp>
+#include <optimization/lbfgs.hpp>
 
 // Regularizer
 #include <optimization/regularizers-inl.hpp>
 
-#include <numerics/armadillo.hpp>
-#include <serialization/serialization_includes.hpp>
+#include <Eigen/SparseCore>
 
 constexpr size_t LINEAR_REGRESSION_NEWTON_VARIABLES_HARD_LIMIT = 10000;
 constexpr size_t LINEAR_REGRESSION_NEWTON_VARIABLES_SOFT_LIMIT = 500;
@@ -51,15 +53,6 @@ namespace supervised {
  */
 linear_regression::~linear_regression(){
   lr_interface.reset();
-}
-
-
-
-/**
- * Returns the name of the model.
- */
-std::string linear_regression::name(){
-  return "regression_linear_regression";
 }
 
 /**
@@ -168,7 +161,7 @@ void linear_regression::train(){
   size_t examples = num_examples();
   size_t variables =  variant_get_value<size_t>(state.at("num_coefficients"));
   DenseVector init_point(variables);
-  init_point.zeros();
+  init_point.setZero();
 
   display_regression_training_summary("Linear regression");
   logprogress_stream << "Number of coefficients    : " << variables << std::endl;
@@ -177,7 +170,7 @@ void linear_regression::train(){
   // -------------------------------------------------------------------------
   // Regularize all variables except the bias term.
   DenseVector is_regularized(variables);
-  is_regularized.ones();
+  is_regularized.setOnes();
   is_regularized(variables-1) = 0;
 
   // Set the penalties for the regularizer.
@@ -257,7 +250,7 @@ void linear_regression::train(){
     stats = turi::optimization::accelerated_gradient(*lr_interface,
         init_point, solver_options, reg);
   } else if (solver == "lbfgs"){
-      stats = turi::optimization::lbfgs(*lr_interface, init_point,
+      stats = turi::optimization::lbfgs_compat(lr_interface, init_point,
           solver_options, smooth_reg);
   } else {
       std::ostringstream msg;
@@ -270,7 +263,7 @@ void linear_regression::train(){
   // -------------------------------------------------------------------------
   coefs = stats.solution;  
   lr_interface->rescale_solution(coefs);
-  bool has_stderr = (stats.hessian.n_rows * stats.hessian.n_cols > 0) &&
+  bool has_stderr = (stats.hessian.rows() * stats.hessian.cols() > 0) &&
     (examples > variables);
   if (has_stderr) {
     double scale = 2 * stats.func_value / (examples - variables); 
@@ -303,6 +296,16 @@ void linear_regression::train(){
   unity_progress->construct_from_sframe(stats.progress_table);
   state["progress"] = to_variant(unity_progress);
 
+  // Compute validation-set stats.
+  if (lr_interface->num_validation_examples() > 0) {
+    // Recycle lvalues from stats to use as out parameters here, now that we're
+    // otherwise done reading from stats.
+    lr_interface->compute_validation_first_order_statistics(
+        stats.solution, stats.gradient, stats.func_value);
+    state["validation_loss"] =  stats.func_value;
+    state["validation_rmse"] =  sqrt((stats.func_value)/examples);
+  }
+
   reg.reset();
   smooth_reg.reset();
 
@@ -316,7 +319,7 @@ void linear_regression::train(){
 flexible_type linear_regression::predict_single_example(
          const DenseVector& x, 
          const prediction_type_enum& output_type){
-  return dot(x, coefs);
+  return x.dot(coefs);
 }
 
 /**
@@ -325,7 +328,7 @@ flexible_type linear_regression::predict_single_example(
 flexible_type linear_regression::predict_single_example(
          const SparseVector& x, 
          const prediction_type_enum& output_type){
-  return dot(x, coefs);
+  return x.dot(coefs);
 }
 
 /**
@@ -365,7 +368,6 @@ void linear_regression::load_version(turi::iarchive& iarc, size_t version) {
   // State  
   variant_deep_load(state, iarc);
 
-  // Everything else
   iarc >> ml_mdata
        >> metrics
        >> coefs
@@ -412,6 +414,18 @@ size_t linear_regression::get_version() const{
   //  4 -  Version 1.7
   return LINEAR_REGRESSION_MODEL_VERSION;  
 }
+
+std::shared_ptr<coreml::MLModelWrapper> linear_regression::export_to_coreml() {
+
+  std::map<std::string, flexible_type> context_metadata = {
+    {"class", name()},
+    {"version", std::to_string(get_version())},
+    {"short_description", "Linear regression model."}};
+
+  return export_linear_regression_as_model_asset(ml_mdata, coefs,
+                                                 context_metadata);
+}
+
 
 
 } // supervised

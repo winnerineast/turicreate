@@ -13,7 +13,7 @@
 #include <unity/lib/gl_sframe.hpp>
 
 // Interfaces
-#include <unity/toolkits/ml_model/ml_model.hpp>
+#include <unity/lib/extensions/ml_model.hpp>
 
 // ML-Data Utils
 #include <ml_data/ml_data.hpp>
@@ -23,11 +23,15 @@
 #include <unity/lib/variant.hpp>
 #include <unity/lib/unity_base_types.hpp>
 #include <unity/lib/variant_deep_serialize.hpp>
+#include <unity/toolkits/coreml_export/mlmodel_wrapper.hpp>
 
-#include <numerics/armadillo.hpp>
-#include <numerics/armadillo.hpp>
+#include <Eigen/Core>
+#include <Eigen/SparseCore>
 
 #include <export.hpp>
+
+#include <unity/lib/toolkit_class_macros.hpp>
+
 // TODO: List of todo's for this file
 //------------------------------------------------------------------------------
 // 1. ml_data_example type for predict.
@@ -37,8 +41,8 @@ namespace turi {
 namespace supervised {
 
 class supervised_learning_model_base;
-typedef arma::vec  DenseVector;
-typedef sparse_vector<double>  SparseVector;
+typedef Eigen::Matrix<double, Eigen::Dynamic,1>  DenseVector;
+typedef Eigen::SparseVector<double>  SparseVector;
 
 /**
  * An enumeration over the possible types of prediction that are supported.
@@ -192,14 +196,6 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
    * -------------------------------------------------------------------------
    */
 
-  /**
-   * Returns the name of the model.
-   *
-   * \returns Name of the model.
-   * \ref model_base for details.
-   */
-  virtual std::string name() = 0;
-  
 
   /**
    * Train a supervised_learning model.
@@ -207,29 +203,6 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
   virtual void train() = 0;
   
 
-  /**
-   * Gets the model version number
-   */
-  virtual size_t get_version() const = 0;
-
-  /**
-   * Save the object using Turi's oarc.
-   */
-  virtual void save_impl(turi::oarchive& oarc) const = 0;
-
-
-  /**
-   * Load the object using Turi's iarc.
-   */
-  virtual void load_version(turi::iarchive& iarc, size_t version) = 0;
-  
-  /**
-   * Initialize the options.
-   *
-   * \param[in] _options Options to set
-   */
-  virtual void init_options(const std::map<std::string,flexible_type>& _options) = 0;
-  
   /**
    * Get metadata mapping. 
    */
@@ -289,23 +262,23 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
   /**
    * Evaluate the model.
    *
-   * \param[in] test_X          Test data.
+   * \param[in] test_data          Test data.
    * \param[in] evaluation_type Evalution type.
    *
    * \note Already assumes that data is of the right shape. Test data
-   * must contain target column also. 
+   * must contain target column also.
    *
    */
   virtual std::map<std::string, variant_type> evaluate(const ml_data&
-                test_data, const std::string& evaluation_type="");
+                test_data, const std::string& evaluation_type="", bool with_prediction=false);
 
   /**
    * Same as evaluate(ml_data), but take SFrame as input.
    */
   virtual std::map<std::string, variant_type> evaluate(const sframe& X,
-                const sframe &y, const std::string& evaluation_type="") {
+                const sframe &y, const std::string& evaluation_type="", bool with_prediction=false) {
     ml_data data = construct_ml_data_using_current_metadata(X, y);
-    return this->evaluate(data, evaluation_type);
+    return this->evaluate(data, evaluation_type, with_prediction);
   }
 
   /**
@@ -334,7 +307,7 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
    * Extract features! 
    */
   virtual std::shared_ptr<sarray<flexible_type>> extract_features(
-      const sframe& X, const std::map<std::string, flexible_type>& options){
+      const sframe& X, ml_missing_value_action missing_value_action) {
     log_and_throw("Model does not support feature extraction");
   }
 
@@ -396,23 +369,26 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
    * Fast path predictions given a row of flexible_types.
    *
    * \param[in] rows List of rows (each row is a flex_dict)
+   * \param[in] missing_value_action Missing value action string
    * \param[in] output_type Output type. 
    */
   virtual gl_sarray fast_predict(
       const std::vector<flexible_type>& rows,
-      const std::string& output_type="", 
-      const std::string& missing_value_action ="error");
+      const std::string& missing_value_action = "error",
+      const std::string& output_type = "");
   
   /**
    * Fast path predictions given a row of flexible_types.
    *
    * \param[in] rows List of rows (each row is a flex_dict)
+   * \param[in] missing_value_action Missing value action string
    * \param[in] output_type Output type. 
+   * \param[in] topk Number of classes to return
    */
   virtual gl_sframe fast_predict_topk(
       const std::vector<flexible_type>& rows,
-      const std::string& output_type="", 
       const std::string& missing_value_action ="error",
+      const std::string& output_type="", 
       const size_t topk = 5) {
     log_and_throw("Not implemented yet");
   }
@@ -451,14 +427,14 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
       ml_missing_value_action mva = ml_missing_value_action::ERROR);
   
   /**
-   * A setter for models that use Eigen for model coefficients.
+   * A setter for models that use Armadillo for model coefficients.
    */
   virtual void set_coefs(const DenseVector& coefs) {
     DASSERT_TRUE(false);
   }
 
   /**
-   * Set the evaluation metric. Set to rmse by defaule.
+   * Set the evaluation metric. Set to RMSE by default.
    */
   void set_evaluation_metric(std::vector<std::string> _metrics){
     metrics = _metrics;
@@ -466,7 +442,7 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
 
 
   /**
-   * Set the evaluation metric. Set to rmse by default.
+   * Set the evaluation metric. Set to RMSE by default.
    */
   void set_tracking_metric(std::vector<std::string> _metrics){
     tracking_metrics = _metrics;
@@ -481,7 +457,7 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
   }
 
   /**
-   * Set the default evaluation metric during model evaluation..
+   * Set the default evaluation metric during model evaluation.
    */
   virtual void set_default_evaluation_metric(){
     set_evaluation_metric({"max_error", "rmse"});
@@ -546,13 +522,6 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
     ml_missing_value_action mva = ml_missing_value_action::ERROR) const;
 
   /**
-   * Makes a copy of this model object.
-   *
-   * \ref model_base for details.
-   */
-  ml_model_base* ml_model_base_clone();
-
-  /**
    * Get the number of feature columns in the model
    *
    * \returns Number of features.
@@ -599,9 +568,7 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
   /**
    * Returns true if the model is a classifier.
    */
-  bool is_classifier() {
-    return name().find("classifier") != std::string::npos;
-  }
+  virtual bool is_classifier() const = 0;
 
   /**
    * Returns true if the model is a classifier.
@@ -621,6 +588,11 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
   std::vector<std::string> get_tracking_metrics()  const;
 
   /**
+   * Get metric display name.
+   */
+  std::string get_metric_display_name(const std::string& metric) const;
+
+  /**
    * Display model training data summary for regression.
    *
    * \param[in] model_display_name   Name to be displayed
@@ -634,7 +606,7 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
    * \param[in] model_display_name   Name to be displayed
    *
    */
-  void display_classifier_training_summary(std::string model_display_name) const;
+  void display_classifier_training_summary(std::string model_display_name, bool simple_mode = false) const;
 
   /**
    * Methods with no current implementation (or empty implementations)
@@ -654,8 +626,165 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
    * Returns true if the model can handle missing value
    */
   virtual bool support_missing_value() const { return false; }
+
+  /**
+   *  API interface through the unity server.
+   *
+   *  Train the model 
+   */
+  void api_train(gl_sframe data, const std::string& target,
+                 const variant_type& validation_data,
+                 const std::map<std::string, flexible_type>& _options);
+
+  /**
+   *  API interface through the unity server.
+   *
+   *  Run prediction. 
+   */
+  gl_sarray api_predict(gl_sframe data, std::string missing_value_action,
+                        std::string output_type);  // TODO: This should be const
+
+  /**
+   *  API interface through the unity server.
+   *
+   *  Run multiclass prediction.
+   */
+  gl_sframe api_predict_topk(gl_sframe data, std::string missing_value_action,
+			     std::string output_type, size_t topk = 5);
+  // TODO: This function should be const.
+
+  /**
+   *  API interface through the unity server.
+   *
+   *  Run classification.
+   */
+  // TODO: This function should be const
+  gl_sframe api_classify(gl_sframe data, std::string missing_value_action,
+                         std::string output_type); // TODO: This should be const
+
+  /**
+   *  API interface through the unity server.
+   *
+   *  Evaluate the model
+   */
+  // TODO: This function should be const
+  variant_map_type api_evaluate(
+      gl_sframe data, std::string missing_value_action, std::string metric, gl_sarray predictions = gl_sarray(), bool with_prediction=false);
+
+  /**
+   *  API interface through the unity server.
+   *
+   *  Extract features!
+   */
+  // TODO: This function should be const
+  gl_sarray api_extract_features(
+      gl_sframe data, std::string missing_value_action);
+
+  /** Export to CoreML. 
+   */
+  virtual std::shared_ptr<coreml::MLModelWrapper> export_to_coreml() = 0;
+
+  std::shared_ptr<coreml::MLModelWrapper> api_export_to_coreml(const std::string& file);
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  BEGIN_BASE_CLASS_MEMBER_REGISTRATION()
+  
+  IMPORT_BASE_CLASS_REGISTRATION(ml_model_base);
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "train", supervised_learning_model_base::api_train, "data", "target",
+      "validation_data", "options");
+  register_defaults("train",
+                    {{"validation_data", to_variant(gl_sframe())},
+                     {"options",
+                      to_variant(std::map<std::string, flexible_type>())}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "predict", supervised_learning_model_base::api_predict, "data",
+      "missing_value_action", "output_type");
+
+  register_defaults("predict", {{"missing_value_action", std::string("auto")},
+                                {"output_type", std::string("")}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "fast_predict", supervised_learning_model_base::fast_predict, "rows",
+      "missing_value_action", "output_type");
+
+  register_defaults("fast_predict",
+                    {{"missing_value_action", std::string("auto")},
+                     {"output_type", std::string("")}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "predict_topk", supervised_learning_model_base::api_predict_topk, "data",
+      "missing_value_action", "output_type", "topk");
+
+  register_defaults("predict_topk",
+                    {{"missing_value_action", std::string("error")},
+                     {"output_type", std::string("")}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "fast_predict_topk", supervised_learning_model_base::fast_predict_topk,
+      "rows", "missing_value_action", "output_type", "topk");
+
+  register_defaults("fast_predict_topk",
+                    {{"missing_value_action", std::string("auto")},
+                     {"output_type", std::string("")}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "classify", supervised_learning_model_base::api_classify, "data",
+      "missing_value_action");
+
+  register_defaults("classify",
+                    {{"missing_value_action", std::string("auto")}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "fast_classify", supervised_learning_model_base::fast_classify, "rows",
+      "missing_value_action");
+
+  register_defaults("fast_classify",
+                    {{"missing_value_action", std::string("auto")}});
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "evaluate", supervised_learning_model_base::api_evaluate, "data",
+      "missing_value_action", "metric", "predictions", "with_predictions");
+
+  register_defaults("evaluate",
+                    {{"metric", std::string("_report")},
+                     {"missing_value_action", std::string("auto")},
+                     {"predictions", gl_sarray()},
+                     {"with_predictions", false}
+                     });
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "extract_features", supervised_learning_model_base::api_extract_features,
+      "data", "missing_value_action");
+
+  register_defaults("extract_features",
+                    {{"missing_value_action", std::string("auto")}});
+
+  REGISTER_CLASS_MEMBER_FUNCTION(
+      supervised_learning_model_base::get_train_stats);
+  REGISTER_CLASS_MEMBER_FUNCTION(
+      supervised_learning_model_base::get_feature_names);
+
+  REGISTER_NAMED_CLASS_MEMBER_FUNCTION(
+      "export_to_coreml", supervised_learning_model_base::api_export_to_coreml,
+      "filename");
+
+  register_defaults("export_to_coreml", {{"filename", std::string("")}});
+
+  END_CLASS_MEMBER_REGISTRATION
+
+ protected:
+  ml_missing_value_action get_missing_value_enum_from_string(
+      const std::string& missing_value_str) const;
 };
 
+/**
+ * Obtains the function registration for the toolkit.
+ */
+std::vector<toolkit_function_specification> get_toolkit_function_registration();
 
 /**
  * Fast prediction path for in-memory predictions on a list of rows.
@@ -665,8 +794,8 @@ class EXPORT supervised_learning_model_base : public ml_model_base {
 gl_sarray _fast_predict(
     std::shared_ptr<supervised_learning_model_base> model, 
     const std::vector<flexible_type>& rows, 
-    const std::string& output_type = "probability",
-    const std::string& missing_value_action = "error");
+    const std::string& missing_value_action = "error",
+    const std::string& output_type = "probability");
 
 /**
  * Fast path for in-memory predictions on a list of rows.
@@ -677,8 +806,8 @@ gl_sarray _fast_predict(
 gl_sframe _fast_predict_topk(
     std::shared_ptr<supervised_learning_model_base> model, 
     const std::vector<flexible_type>& rows,
-    const std::string& output_type = "probability",
     const std::string& missing_value_action = "error",
+    const std::string& output_type = "probability",
     const size_t topk = 5);
 
 /**
@@ -699,22 +828,6 @@ gl_sframe _fast_classify(
  */
 std::vector<std::vector<flexible_type>> _get_metadata_mapping(
     std::shared_ptr<supervised_learning_model_base> model);
-
-/**
- * Rule based better than stupid model selector.
- */
-std::string _regression_model_selector(std::shared_ptr<unity_sframe> _X);
-
-/**
- * Rule based better than stupid model selector.
- */
-std::string _classifier_model_selector(std::shared_ptr<unity_sframe> _X);
-
-/**
- * Rule-based method for getting a list of potential models.
- */
-std::vector<std::string> _classifier_available_models(size_t num_classes, 
-                                         std::shared_ptr<unity_sframe> _X);
 
 } // supervised
 } // turicreate

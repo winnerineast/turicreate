@@ -13,16 +13,15 @@ from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
 
-from .. import connect as _mt
-from ..connect import main as glconnect
+from .._connect import main as glconnect
 from .sframe import SFrame
 from .sarray import SArray
 from .gframe import GFrame, VERTEX_GFRAME, EDGE_GFRAME
-from ..cython.cy_graph import UnityGraphProxy
-from ..cython.context import debug_trace as cython_context
+from .._cython.cy_graph import UnityGraphProxy
+from .._cython.context import debug_trace as cython_context
 from ..util import _is_non_string_iterable, _make_internal_url
-from ..deps import pandas as pd
-from ..deps import HAS_PANDAS
+from .._deps import pandas as pd
+from .._deps import HAS_PANDAS
 
 import inspect
 import copy
@@ -1042,7 +1041,7 @@ class SGraph(object):
         Save and load in binary format.
 
         >>> g.save('mygraph')
-        >>> g2 = turicreate.load_graph('mygraph')
+        >>> g2 = turicreate.load_sgraph('mygraph')
 
         Save in JSON format.
 
@@ -1151,12 +1150,6 @@ class SGraph(object):
 #/*                            Module Function                             */
 #/*                                                                        */
 #/**************************************************************************/
-def load_graph(filename, format='binary', delimiter='auto'):
-    import warnings
-    warnings.warn("load_graph has been renamed to load_sgraph. This function will be removed in the next release.", PendingDeprecationWarning)
-    return load_sgraph(filename, format=format)
-
-
 def load_sgraph(filename, format='binary', delimiter='auto'):
     """
     Load SGraph from text file or previously saved SGraph binary.
@@ -1196,7 +1189,7 @@ def load_sgraph(filename, format='binary', delimiter='auto'):
     Save and load in binary format.
 
     >>> g.save('mygraph')
-    >>> g2 = turicreate.load_graph('mygraph')
+    >>> g2 = turicreate.load_sgraph('mygraph')
     """
 
 

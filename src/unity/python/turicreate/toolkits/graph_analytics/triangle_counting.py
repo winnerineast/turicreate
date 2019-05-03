@@ -6,8 +6,9 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
-import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
 
 class TriangleCountingModel(_ModelBase):
@@ -102,7 +103,7 @@ def create(graph, verbose=True):
     :class:`~turicreate.triangle_counting.TriangleCountingModel` as follows:
 
     >>> g =
-    >>> turicreate.load_graph('http://snap.stanford.edu/data/email-Enron.txt.gz',
+    >>> turicreate.load_sgraph('http://snap.stanford.edu/data/email-Enron.txt.gz',
             >>> format='snap') tc = turicreate.triangle_counting.create(g)
 
     We can obtain the number of triangles that each vertex in the graph ``g``
@@ -121,8 +122,12 @@ def create(graph, verbose=True):
     --------
     TriangleCountingModel
     """
+    from turicreate._cython.cy_server import QuietProgress
+
     if not isinstance(graph, _SGraph):
         raise TypeError('graph input must be a SGraph object.')
 
-    params = _main.run('triangle_counting', {'graph': graph.__proxy__}, verbose)
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.triangle_counting.create(
+            {'graph': graph.__proxy__})
     return TriangleCountingModel(params['model'])

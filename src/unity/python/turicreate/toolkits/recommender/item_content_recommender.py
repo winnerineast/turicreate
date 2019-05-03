@@ -13,7 +13,6 @@ from __future__ import division as _
 from __future__ import absolute_import as _
 import turicreate as _turicreate
 from turicreate import SFrame as _SFrame
-from turicreate import SArray as _SArray
 from turicreate.toolkits.recommender.util import _Recommender
 from array import array as _array
 
@@ -62,7 +61,7 @@ def create(item_data, item_id,
         If observation_data is given, then this specifies the column
         name corresponding to the user identifier.
 
-    target_id : None (optional)
+    target : None (optional)
         If observation_data is given, then this specifies the column
         name corresponding to the target or rating.
 
@@ -127,6 +126,8 @@ def create(item_data, item_id,
       [2 rows x 3 columns]
 
     """
+    from turicreate._cython.cy_server import QuietProgress
+
     # item_data is correct type
     if not isinstance(item_data, _SFrame) or item_data.num_rows() == 0:
         raise TypeError("`item_data` argument must be a non-empty SFrame giving item data to use for similarities.")
@@ -172,7 +173,6 @@ def create(item_data, item_id,
     # Translate any string columns to actually work in nearest
     # neighbors by making it a categorical list.  Also translate lists
     # into dicts, and normalize numeric columns.
-    normalization_columns = []
     gaussian_kernel_metrics = set()
 
     for c in item_columns:
@@ -186,12 +186,9 @@ def create(item_data, item_id,
         print("Applying transform:")
         print(item_data_transform)
 
-    # The name of this model.
-    method = 'item_content_recommender'
-
-    opts = {'model_name': method}
-    response = _turicreate.toolkits._main.run("recsys_init", opts)
-    model_proxy = response['model']
+    opts = {}
+    model_proxy = _turicreate.extensions.item_content_recommender()
+    model_proxy.init_options(opts)
 
     # The user_id is implicit if none is given.
     if user_id is None:
@@ -244,21 +241,18 @@ def create(item_data, item_id,
 
     graph["score"] = graph["score"].apply(process_weights)
 
-    opts = {'dataset': observation_data,
-            'user_id': user_id,
+    opts = {'user_id': user_id,
             'item_id': item_id,
             'target': target,
-            'user_data': _turicreate.SFrame(),
-            'item_data': item_data,
-            'nearest_items': graph,
-            'model': model_proxy,
             'similarity_type' : "cosine",
             'max_item_neighborhood_size' : max_item_neighborhood_size}
 
-    response = _turicreate.toolkits._main.run('recsys_train', opts, verbose)
-    out_model = ItemContentRecommender(response['model'])
+    user_data = _turicreate.SFrame()
+    extra_data = {"nearest_items" : graph}
+    with QuietProgress(verbose):
+        model_proxy.train(observation_data, user_data, item_data, opts, extra_data)
 
-    return out_model
+    return ItemContentRecommender(model_proxy)
 
 class ItemContentRecommender(_Recommender):
     """A recommender based on the similarity between item content rather

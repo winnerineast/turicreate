@@ -48,14 +48,10 @@ class EXPORT recsys_factorization_model_base : public recsys_model_base {
 
  private:
   mutable mutex _get_similar_buffers_lock;
-  mutable std::vector<arma::fvec>  _get_similar_buffers;
+  mutable std::vector<Eigen::Matrix<float, Eigen::Dynamic, 1> >  _get_similar_buffers;
 
 
  public:
-
-  std::vector<std::string> list_fields() const;
-  std::map<std::string, variant_type> get(const std::string& v) const;
-  
   void score_all_items(
       std::vector<std::pair<size_t, double> >& scores,
       const std::vector<v2::ml_data_entry>& query_row,
@@ -86,7 +82,7 @@ class EXPORT recsys_factorization_model_base : public recsys_model_base {
                   const v2::ml_data& training_data_by_item);
  private:
   std::shared_ptr<factorization::factorization_model> model;
-  
+
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -97,17 +93,16 @@ class EXPORT recsys_factorization_model_base : public recsys_model_base {
 class recsys_factorization_model : public recsys_factorization_model_base {
 
  public:
-  std::string name() const { return "factorization_recommender"; }
-
-   bool use_target_column(bool target_is_present) const { return true; }
+  bool use_target_column(bool target_is_present) const override { return true; }
 
  private:
-  bool include_ranking_options() const { return false; }
+  bool include_ranking_options() const override { return false; }
 
-  recsys_model_base* internal_clone() {
-    return new recsys_factorization_model(*this);
-  }
-
+ public: 
+   // TODO: convert interface above to use the extensions methods here
+  BEGIN_CLASS_MEMBER_REGISTRATION("factorization_recommender")
+  IMPORT_BASE_CLASS_REGISTRATION(recsys_model_base)
+  END_CLASS_MEMBER_REGISTRATION
 };
 
 /** Implements linear_model.
@@ -115,20 +110,18 @@ class recsys_factorization_model : public recsys_factorization_model_base {
 class recsys_ranking_factorization_model : public recsys_factorization_model_base {
 
  public:
-  std::string name() const { return "ranking_factorization_recommender"; }
-
-  bool use_target_column(bool target_is_present) const { return target_is_present; }
+  bool use_target_column(bool target_is_present) const override { return target_is_present; }
 
  private:
-  bool include_ranking_options() const { return true; }
+  bool include_ranking_options() const override { return true; }
 
-  recsys_model_base* internal_clone() {
-    return new recsys_ranking_factorization_model(*this);
-  }
+ public: 
 
+   // TODO: convert interface above to use the extensions methods here
+  BEGIN_CLASS_MEMBER_REGISTRATION("ranking_factorization_recommender")
+  IMPORT_BASE_CLASS_REGISTRATION(recsys_model_base)
+  END_CLASS_MEMBER_REGISTRATION
 };
-
-
 
 
 }}

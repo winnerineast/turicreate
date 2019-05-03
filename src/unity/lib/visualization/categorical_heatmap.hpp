@@ -8,7 +8,7 @@
 
 #include <unity/lib/gl_sframe.hpp>
 #include <sframe/groupby_aggregate_operators.hpp>
-
+#include <unity/lib/visualization/plot.hpp>
 #include "transformation.hpp"
 
 namespace turi {
@@ -23,7 +23,7 @@ class categorical_heatmap_result: public transformation_output,
 // expects a gl_sframe of:
 // "x": str,
 // "y": float
-typedef transformation<gl_sframe, categorical_heatmap_result, 5000000> categorical_heatmap_parent;
+typedef transformation<gl_sframe, categorical_heatmap_result> categorical_heatmap_parent;
 
 class categorical_heatmap : public categorical_heatmap_parent {
   public:
@@ -31,12 +31,12 @@ class categorical_heatmap : public categorical_heatmap_parent {
     virtual void merge_results(std::vector<categorical_heatmap_result>& transformers) override;
 };
 
-void show_categorical_heatmap(const std::string& path_to_client,
+std::shared_ptr<Plot> plot_categorical_heatmap(
                               const gl_sarray& x,
                               const gl_sarray& y,
-                              const std::string& xlabel,
-                              const std::string& ylabel,
-                              const std::string& title);
+                              const flexible_type& xlabel,
+                              const flexible_type& ylabel,
+                              const flexible_type& title);
 
 }} // turi::visualization
 

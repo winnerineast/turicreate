@@ -9,7 +9,7 @@ interaction data and use that model to make recommendations.
 Creating a recommender model typically requires a data set to use for
 training the model, with columns that contain the user IDs, the item
 IDs, and (optionally) the ratings. For this example, we use the [MovieLens
- dataset](https://grouplens.org/datasets/movielens/).
+20M dataset](https://grouplens.org/datasets/movielens/20m/).[<sup>1</sup>](../datasets.md)
 
 ```python
 import turicreate as tc
@@ -84,13 +84,12 @@ results = model.recommend()
 The following sections provide more information about the recommender model:
 
 - [Using models](using-trained-models.md)
-  * making recommendations
-  * finding similar items and users
-  * evaluating the model
-  * interactive visualizations
-  * saving models
-  * and more
+  * Making recommendations
+  * Finding similar items
+  * Saving and loading models
 - [Choosing a model](choosing-a-model.md)
-  * data you might encounter (implicit or explicit)
-  * types of models worth considering (item-based similarity, factorization-based models, and so on).
+  * Data you might encounter (implicit or explicit)
+  * Types of models worth considering (item-based similarity, factorization-based models, and so on).
+- [Deployment to Core ML](coreml-deployment.md)
+  * Export to Core ML, drag and drop in an iOS application
 - [API Docs](https://apple.github.io/turicreate/docs/api/turicreate.toolkits.recommender.html)

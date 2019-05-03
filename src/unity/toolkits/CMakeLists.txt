@@ -2,6 +2,7 @@ project(unity_toolkits)
 
 subdirs(ml_model
         activity_classification
+        drawing_classifier
         coreml_export
         sparse_similarity
         factorization
@@ -11,29 +12,15 @@ subdirs(ml_model
         ml_data_2
         recsys
         util 
-        options
         evaluation
         supervised_learning
         nearest_neighbors
         pattern_mining
         feature_engineering
         text
-        image)
-
-
-make_empty_library(unity_toolkits
-  REQUIRES
-    unity_clustering
-    unity_recsys
-    unity_sparse_similarity
-    supervised_learning
-    unity_nearest_neighbors
-    unity_text
-    unity_ml_data_2
-    unity_feature_engineering
-    unity_pattern_mining
-    unity_evaluation
-    unity_coreml_model_export
-    unity_image_export
-    unity_activity_classification
-    )
+        image
+        neural_net
+        object_detection
+        object_detection/one_shot_object_detection
+        prototype
+)

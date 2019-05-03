@@ -5,11 +5,12 @@ SET(EXTRA_CONFIGURE_COMMANDS "")
 
 if (CLANG)
   SET(ADD_BOOST_BOOTSTRAP --with-toolset=clang)
-  SET(cxxflags "-std=c++11 -stdlib=libc++")
-  SET(tmp2 "-stdlib=libc++")
-  SET(ADD_BOOST_COMPILE_TOOLCHAIN "toolset=clang cxxflags=${cxxflags} linkflags=${tmp2}")
-  UNSET(tmp)
-  UNSET(tmp2)
+  SET(cxxflags "-std=c++11 -Wno-everything ${ARCH_FLAG} ${CPP_REAL_COMPILER_FLAGS}")
+  if(TC_BUILD_IOS)
+    SET(ADD_BOOST_COMPILE_TOOLCHAIN "toolset=clang abi=aapcs address-model=64 architecture=arm binary-format=mach-o threading=multi target-os=iphone cflags=\"-arch arm64\" cxxflags=\"${cxxflags}\"")
+  else()
+    SET(ADD_BOOST_COMPILE_TOOLCHAIN "toolset=clang cflags=\"-Wno-everything\" cxxflags=\"${cxxflags}\"")
+  endif()
 elseif(APPLE)
   SET(ADD_BOOST_COMPILE_TOOLCHAIN toolset=darwin)
 elseif(WIN32 AND ${MINGW_MAKEFILES})
@@ -20,6 +21,10 @@ elseif(WIN32 AND ${MSYS_MAKEFILES})
   SET(ADD_BOOST_BOOTSTRAP --with-toolset=mingw)
   SET(ADD_BOOST_COMPILE_TOOLCHAIN toolset=gcc)
   SET(EXTRA_CONFIGURE_COMMANDS && perl -pi -e "s/mingw/gcc/g" ./project-config.jam)
+elseif(UNIX)
+  SET(cxxflags "-std=c++11 ${CPP_REAL_COMPILER_FLAGS}")
+  SET(ADD_BOOST_BOOTSTRAP --with-toolset=gcc)
+  SET(ADD_BOOST_COMPILE_TOOLCHAIN "toolset=gcc cxxflags=\"${cxxflags}\"")
 else()
   SET(ADD_BOOST_BOOTSTRAP "")
   SET(ADD_BOOST_COMPILE_TOOLCHAIN "")
@@ -38,10 +43,18 @@ else()
   if(WIN32 AND MSYS_MAKEFILES)
     SET(PLATFORM_DEFINES define=MS_WIN64)
   endif()
-  SET(BOOST_BUILD_SHELL_COMMAND "rm -rf <INSTALL_DIR>/include/boost && PATH=$PATH:${CMAKE_SOURCE_DIR}/deps/local/bin C_INCLUDE_PATH=${CMAKE_SOURCE_DIR}/deps/local/include CPLUS_INCLUDE_PATH=${CMAKE_SOURCE_DIR}/deps/local/include LIBRARY_PATH=${CMAKE_SOURCE_DIR}/deps/local/lib ./b2 ${ADD_BOOST_COMPILE_TOOLCHAIN} install link=static variant=release threading=multi runtime-link=static ${PLATFORM_DEFINES} cxxflags=-fPIC")
+  if(TC_BUILD_IOS)
+    execute_process(
+      COMMAND bash -c "xcrun --sdk iphoneos --show-sdk-path"
+      OUTPUT_VARIABLE _ios_sdk_path
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(OPTIONAL_SDKROOT "SDKROOT=${_ios_sdk_path}")
+  endif()
+  SET(BOOST_BUILD_SHELL_COMMAND "rm -rf <INSTALL_DIR>/include/boost && PATH=$PATH:${CMAKE_SOURCE_DIR}/deps/local/bin C_INCLUDE_PATH=${CMAKE_SOURCE_DIR}/deps/local/include CPLUS_INCLUDE_PATH=${CMAKE_SOURCE_DIR}/deps/local/include LIBRARY_PATH=${CMAKE_SOURCE_DIR}/deps/local/lib ${OPTIONAL_SDKROOT} ./b2 -d0 -q ${ADD_BOOST_COMPILE_TOOLCHAIN} install link=static variant=release threading=multi runtime-link=static ${PLATFORM_DEFINES} cxxflags='-fPIC -std=c++11'")
   STRING(REGEX REPLACE "C:" "/C" BOOST_BUILD_SHELL_COMMAND ${BOOST_BUILD_SHELL_COMMAND})
   SET(BOOST_BUILD_COMMAND sh -c ${BOOST_BUILD_SHELL_COMMAND})
-  SET(BOOST_INSTALL_COMMAND "PATH=$PATH:${CMAKE_SOURCE_DIR}/deps/local/bin ./b2 tools/bcp && cp dist/bin/bcp ${CMAKE_SOURCE_DIR}/deps/local/bin")
+  SET(BOOST_INSTALL_COMMAND "PATH=$PATH:${CMAKE_SOURCE_DIR}/deps/local/bin ./b2 -d0 -q tools/bcp && cp dist/bin/bcp ${CMAKE_SOURCE_DIR}/deps/local/bin")
   SET(BOOST_INSTALL_COMMAND sh -c ${BOOST_INSTALL_COMMAND})
 endif()
 
@@ -57,7 +70,7 @@ endif()
 
 ExternalProject_Add(ex_boost
   PREFIX ${CMAKE_SOURCE_DIR}/deps/build/boost
-  URL "${CMAKE_SOURCE_DIR}/deps/src/boost_1_65_1/"
+  URL "${CMAKE_SOURCE_DIR}/deps/src/boost_1_68_0/"
   BUILD_IN_SOURCE 1
   INSTALL_DIR ${CMAKE_SOURCE_DIR}/deps/local
   PATCH_COMMAND ${PATCHCMD}
@@ -80,6 +93,18 @@ ExternalProject_Add(ex_boost
   ${EXTRA_CONFIGURE_COMMANDS}
   BUILD_COMMAND ${BOOST_BUILD_COMMAND}
   INSTALL_COMMAND ${BOOST_INSTALL_COMMAND}
+  BUILD_BYPRODUCTS ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_chrono.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_context.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_coroutine.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_date_time.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_iostreams.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_filesystem.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_program_options.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_random.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_regex.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_system.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_unit_test_framework.a
+                   ${CMAKE_SOURCE_DIR}/deps/local/lib/libboost_thread.a
   )
 
 set(Boost_LIBRARIES
@@ -95,15 +120,11 @@ set(Boost_LIBRARIES
   ${BOOST_LIBS_DIR}/libboost_regex.a)
 
 
-message(STATUS "Boost libs: " ${Boost_LIBRARIES})
-
 # add an imported library for each boost library
 #
 set(libnames "")
 foreach(blib ${Boost_LIBRARIES})
-  message(STATUS "Boost libs: " ${blib})
   string(REGEX REPLACE "\\.a$" ${CMAKE_SHARED_LIBRARY_SUFFIX} bout ${blib})
-  message(STATUS "Boost dyn libs: " ${bout})
   set(Boost_SHARED_LIBRARIES ${Boost_SHARED_LIBRARIES} ${bout})
   get_filename_component(FNAME ${blib} NAME)
   add_library(${FNAME} STATIC IMPORTED)
@@ -111,8 +132,6 @@ foreach(blib ${Boost_LIBRARIES})
   list(APPEND libnames ${FNAME})
 endforeach()
 
-
-message(STATUS "Boost Shared libs: " ${Boost_SHARED_LIBRARIES})
 
 add_dependencies(ex_boost ex_libbz2 ex_libz)
 # add_definitions(-DBOOST_DATE_TIME_POSIX_TIME_STD_CONFIG)
@@ -144,7 +163,6 @@ set(Boost_Test_LIBRARIES
 
 set(libnames "")
 foreach(blib ${Boost_Test_LIBRARIES})
-  message(STATUS "Boost libs: " ${blib})
   string(REGEX REPLACE "\\.a$" ${CMAKE_SHARED_LIBRARY_SUFFIX} bout ${blib})
   get_filename_component(FNAME ${blib} NAME)
   add_library(${FNAME} STATIC IMPORTED)

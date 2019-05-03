@@ -9,10 +9,11 @@ from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
 from ..data_structures.sarray import SArray
-from ..util.timezone import GMT
+from ..data_structures.sframe import SFrame
+from ..data_structures.sarray import load_sarray
+from .._cython.cy_flexible_type import GMT
 from . import util
 
-import binascii
 import pandas as pd
 import numpy as np
 import unittest
@@ -24,16 +25,12 @@ import math
 import shutil
 import array
 import time
-import itertools
 import warnings
 import functools
 import tempfile
 import sys
 import six
 
-#######################################################
-# Metrics tracking tests are in test_usage_metrics.py #
-#######################################################
 
 class SArrayTest(unittest.TestCase):
     def setUp(self):
@@ -46,6 +43,9 @@ class SArrayTest(unittest.TestCase):
         self.float_data = [1., 2., 3., 4., 5., 6., 7., 8., 9., 10.]
         self.string_data = ["abc", "def", "hello", "world", "pika", "chu", "hello", "world"]
         self.vec_data = [array.array('d', [i, i+1]) for i in self.int_data]
+        self.np_array_data = [np.array(x) for x in self.vec_data]
+        self.empty_np_array_data = [np.array([])]
+        self.np_matrix_data = [np.matrix(x) for x in self.vec_data]
         self.list_data = [[i, str(i), i * 1.0] for i in self.int_data]
         self.dict_data =  [{str(i): i, i : float(i)} for i in self.int_data]
         self.url = "http://s3-us-west-2.amazonaws.com/testdatasets/a_to_z.txt.gz"
@@ -53,7 +53,14 @@ class SArrayTest(unittest.TestCase):
     def __test_equal(self, _sarray, _data, _type):
         self.assertEqual(_sarray.dtype, _type)
         self.assertEqual(len(_sarray), len(_data))
-        self.assertSequenceEqual(list(_sarray.head(len(_sarray))), _data)
+        sarray_contents = list(_sarray.head(len(_sarray)))
+        if _type == np.ndarray:
+            # Special case for np.ndarray elements, which assertSequenceEqual
+            # does not handle.
+            np.testing.assert_array_equal(sarray_contents, _data)
+        else:
+            # Use unittest methods when possible for better consistency.
+            self.assertSequenceEqual(sarray_contents, _data)
 
     def __test_almost_equal(self, _sarray, _data, _type):
         self.assertEqual(_sarray.dtype, _type)
@@ -102,6 +109,10 @@ class SArrayTest(unittest.TestCase):
         self.__test_equal(SArray(self.url, str), expected_output, str)
 
         self.__test_creation(self.vec_data, array.array, self.vec_data)
+        self.__test_creation(self.np_array_data, np.ndarray, self.np_array_data)
+        self.__test_creation(self.empty_np_array_data, np.ndarray,
+                             self.empty_np_array_data)
+        self.__test_creation(self.np_matrix_data, np.ndarray, self.np_matrix_data)
         self.__test_creation(self.list_data, list, self.list_data)
 
         self.__test_creation(self.dict_data, dict, self.dict_data)
@@ -112,8 +123,30 @@ class SArrayTest(unittest.TestCase):
         self.__test_creation_type_inference(self.bool_data, int, [int(x) for x in self.bool_data])
         self.__test_creation_type_inference(self.string_data, str, self.string_data)
         self.__test_creation_type_inference(self.vec_data, array.array, self.vec_data)
+        self.__test_creation_type_inference(self.np_array_data, np.ndarray,
+                                            self.np_array_data)
+        self.__test_creation_type_inference(self.empty_np_array_data,
+                                            np.ndarray,
+                                            self.empty_np_array_data)
+        self.__test_creation_type_inference(self.np_matrix_data, np.ndarray,
+                                            self.np_matrix_data)
         self.__test_creation_type_inference([np.bool_(True),np.bool_(False)],int,[1,0])
         self.__test_creation((1,2,3,4), int, [1,2,3,4])
+
+        # Test numpy types, which are not compatible with the pd.Series path in
+        # __test_creation and __test_creation_type_inference
+        self.__test_equal(SArray(np.array(self.vec_data), array.array),
+                          self.vec_data, array.array)
+        self.__test_equal(SArray(np.matrix(self.vec_data), array.array),
+                          self.vec_data, array.array)
+        self.__test_equal(SArray(np.array(self.vec_data)),
+                          self.vec_data, array.array)
+        self.__test_equal(SArray(np.matrix(self.vec_data)),
+                          self.vec_data, array.array)
+
+        # Test python 3
+        self.__test_equal(SArray(filter(lambda x: True, self.int_data)), self.int_data, int)
+        self.__test_equal(SArray(map(lambda x: x, self.int_data)), self.int_data, int)
 
     def test_list_with_none_creation(self):
         tlist=[[2,3,4],[5,6],[4,5,10,None]]
@@ -178,6 +211,14 @@ class SArrayTest(unittest.TestCase):
         self.__test_equal(SArray([1,2,None]).is_in([1]), [1,0,0], int)
 
     def test_save_load(self):
+
+        # Check top level load function
+        with util.TempDirectory() as f:
+            sa = SArray(self.float_data)
+            sa.save(f)
+            sa2 = load_sarray(f)
+            self.__test_equal(sa2, self.float_data, float)
+
         # Make sure these files don't exist before testing
         self._remove_sarray_files("intarr")
         self._remove_sarray_files("fltarr")
@@ -496,6 +537,9 @@ class SArrayTest(unittest.TestCase):
 
         badcast = list(SArray([["a",1.0],["b",2.0]]).astype(array.array, undefined_on_failure=True))
         self.assertEqual(badcast, [None, None])
+        
+        with self.assertRaises(TypeError):
+            s.astype(None)
 
     def test_clip(self):
         # invalid types
@@ -1036,6 +1080,17 @@ class SArrayTest(unittest.TestCase):
         self.__test_equal(t & t2, list(((s & s2) > 0).astype(int)), int)
         self.__test_equal(t | t2, list(((s | s2) > 0).astype(int)), int)
 
+    def test_logical_ops_missing_value_propagation(self):
+        s=[0,    0,0,None, None, None,1,1,   1]
+        s2=[0,None,1,0,    None, 1,   0,None,1]
+        t = SArray(s, int)
+        t2 = SArray(s2, int)
+
+        and_result = [0,0,0,0,None,None,0,None,1]
+        or_result = [0,None,1,None,None,1,1,1,1]
+        self.__test_equal(t & t2, and_result, int)
+        self.__test_equal(t | t2, or_result, int)
+
     def test_string_operators(self):
         s=["a","b","c","d","e","f","g","h","i","j"]
         s2=["e","d","c","b","a","j","i","h","g","f"]
@@ -1111,6 +1166,9 @@ class SArrayTest(unittest.TestCase):
 
         sa_sample = SArray().sample(.5, 9)
         self.assertEqual(len(sa_sample), 0)
+        self.assertEqual(len(SArray.from_sequence(100).sample(0.5, 1, exact=True)), 50)
+        self.assertEqual(len(SArray.from_sequence(100).sample(0.5, 2, exact=True)), 50)
+
 
     def test_hash(self):
         a = SArray([0,1,0,1,0,1,0,1], int)
@@ -2866,7 +2924,7 @@ class SArrayTest(unittest.TestCase):
         sa = SArray(iso_str_list)
         self.__test_equal(sa,self.datetime_data,dt.datetime)
 
-        iso_str_list[2] = pd.tslib.NaT
+        iso_str_list[2] = pd.NaT
         sa = SArray(iso_str_list)
         self.__test_equal(sa,self.datetime_data,dt.datetime)
 
@@ -2988,3 +3046,143 @@ class SArrayTest(unittest.TestCase):
         sa = SArray()
         c = sa.value_counts()
         self.assertEqual(len(c), 0)
+
+    def test_ndarray_shape(self):
+        a1 = np.array([[1,2,3,4],[5,6,7,8]], 'd')
+        a2 = a1.reshape(4,2)
+        a3 = a1.transpose()
+        a4 = a3.reshape(2,4)
+
+        b1 = a1[:2,:2]
+        b2 = a2[:2,:2]
+        b3 = a3[:2,:2]
+        b4 = a4[:2,:2]
+
+        c1 = b1.transpose()
+        c2 = b2.transpose()
+        c3 = b3.transpose()
+        c4 = b4.transpose()
+
+        d1 = a1[:2,2:4]
+        d2 = a2[2:4,:2]
+        d3 = a3[2:4,:2]
+        d4 = a4[:2,2:4]
+
+        originals = [a1,a2,a3,a4,b1,b2,b3,b4,c1,c2,c3,c4,d1,d2,d3,d4]
+        sa = SArray(originals)
+        l = list(sa)
+
+        # check roundtriping of SArray ndarray type
+        for i in range(len(l)):
+                self.assertTrue(np.array_equal(l[i], originals[i]))
+
+        # check roundtriping again because the ndarray type SArray
+        # returned is slightly odd (it uses a custom bufferprotocol
+        # to share memory with C++)
+        sb = SArray(l)
+        l2 = list(sb)
+        for i in range(len(l)):
+            self.assertTrue(np.array_equal(l[i], l2[i]))
+
+        # test slicing
+        slice_true = [x[1:] for x in originals]
+
+        slice_test = list(sa.apply(lambda x:x[1:]))
+        for i in range(len(l)):
+            self.assertTrue(np.array_equal(slice_test[i], slice_true[i]))
+        # test slice round tripping
+        # test SArray(slice_true)
+
+    def test_ndarray_ops(self):
+        a1 = np.array([[1,2,3,4],[5,6,7,8]], 'd')
+        a2 = a1.reshape(4,2)
+        sa = SArray([a1,a2])
+
+        b1 = np.array([[2,1,4,3],[6,5,8,7]], 'd')
+        b2 = a1.reshape(4,2)
+        sb = SArray([b1,b2])
+
+        res = sa + sb
+        self.assertTrue(np.array_equal(res[0], a1+b1))
+        self.assertTrue(np.array_equal(res[1], a2+b2))
+
+        res = sa + 1
+        self.assertTrue(np.array_equal(res[0], a1+1))
+        self.assertTrue(np.array_equal(res[1], a2+1))
+
+        res = 1 + sa
+        self.assertTrue(np.array_equal(res[0], 1+a1))
+        self.assertTrue(np.array_equal(res[1], 1+a2))
+
+        res = sa - sb
+        self.assertTrue(np.array_equal(res[0], a1-b1))
+        self.assertTrue(np.array_equal(res[1], a2-b2))
+
+        res = sa - 1
+        self.assertTrue(np.array_equal(res[0], a1-1))
+        self.assertTrue(np.array_equal(res[1], a2-1))
+
+        res = 1 - sa 
+        self.assertTrue(np.array_equal(res[0], 1-a1))
+        self.assertTrue(np.array_equal(res[1], 1-a2))
+
+        res = sa * sb
+        self.assertTrue(np.array_equal(res[0], a1*b1))
+        self.assertTrue(np.array_equal(res[1], a2*b2))
+
+        res = sa * 2
+        self.assertTrue(np.array_equal(res[0], a1*2))
+        self.assertTrue(np.array_equal(res[1], a2*2))
+
+        res = 2 * sa
+        self.assertTrue(np.array_equal(res[0], 2*a1))
+        self.assertTrue(np.array_equal(res[1], 2*a2))
+
+        res = sa / sb
+        self.assertTrue(np.array_equal(res[0], a1/b1))
+        self.assertTrue(np.array_equal(res[1], a2/b2))
+
+        res = sa / 2
+        self.assertTrue(np.array_equal(res[0], a1/2.0))
+        self.assertTrue(np.array_equal(res[1], a2/2.0))
+
+        res = sa / 2.0
+        self.assertTrue(np.array_equal(res[0], a1/2.0))
+        self.assertTrue(np.array_equal(res[1], a2/2.0))
+
+        res = 2.0 / sa 
+        self.assertTrue(np.array_equal(res[0], 2.0/a1))
+        self.assertTrue(np.array_equal(res[1], 2.0/a2))
+
+        # misshappen
+        with self.assertRaises(RuntimeError):
+            res.sum()
+
+        self.assertTrue(np.array_equal(SArray([a1,b1]).sum(), a1+b1))
+
+    def test_type_casting(self):
+        x = SFrame({'a': [[1,2], None, [3,4], None]})
+        x['a'] = SArray(x['a'], list)
+        self.assertTrue(x['a'].dtype == list)
+
+    def test_filter_by(self):
+        
+        #integer example
+        x = SArray([1,2,3,4,5,6,7])
+        self.assertEqual(sorted(x.filter_by([11,7,2,8,4])), [2,4,7])
+        self.assertEqual(sorted(x.filter_by([11,7,2,8,4,3], exclude=True)), [1,5,6])
+    
+        #empty SArray
+        self.assertEqual(sorted(x.filter_by([77,22,18,42])), [])
+        self.assertEqual(sorted(x.filter_by([77,22,18,42], exclude=True)), list(x))
+        
+        #duplicates
+        self.assertEqual(sorted(x.filter_by([2,2,3,44])), [2,3])
+        x = SArray([1,2,2,3,4,5,6,7])
+        self.assertEqual(sorted(x.filter_by([2,2,3,44])), [2,2,3])
+    
+        #strings
+        x = SArray(['dog', 'cat', 'cow', 'horse'])
+        self.assertEqual(sorted(x.filter_by(['cat', 'hamster', 'dog', 'fish', 'bird', 'snake'])), ['cat', 'dog'])
+        self.assertEqual(sorted(x.filter_by(['cat', 'hamster', 'dog', 'fish', 'bird', 'snake'], exclude=True)), ['cow', 'horse'])
+        self.assertEqual(sorted(x.filter_by('dog')), ['dog'])

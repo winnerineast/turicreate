@@ -1,6 +1,6 @@
 project(unity_toolkits)
 
-make_library(unity_feature_engineering
+make_library(unity_feature_engineering OBJECT
   SOURCES
     class_registrations.cpp
     dict_transform_utils.cpp
@@ -8,7 +8,6 @@ make_library(unity_feature_engineering
     one_hot_encoder.cpp
     feature_binner.cpp
     sample_transformer.cpp
-    feature_hasher.cpp
     dimension_reduction.cpp
     quadratic_features.cpp
     topk_indexer.cpp
@@ -29,4 +28,4 @@ make_library(unity_feature_engineering
     unity_clustering
     unity_graph_analytics
     unity_ml_model
-    )
+)

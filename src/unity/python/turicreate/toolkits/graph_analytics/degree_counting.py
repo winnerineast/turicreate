@@ -6,8 +6,9 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
-import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
 
 
@@ -74,7 +75,7 @@ def create(graph, verbose=True):
     If given an :class:`~turicreate.SGraph` ``g``, we can create
     a :class:`~turicreate.degree_counting.DegreeCountingModel` as follows:
 
-    >>> g = turicreate.load_graph('http://snap.stanford.edu/data/web-Google.txt.gz',
+    >>> g = turicreate.load_sgraph('http://snap.stanford.edu/data/web-Google.txt.gz',
     ...                         format='snap')
     >>> m = turicreate.degree_counting.create(g)
     >>> g2 = m['graph']
@@ -107,8 +108,12 @@ def create(graph, verbose=True):
     --------
     DegreeCountingModel
     """
-    if not isinstance(graph, _SGraph):
-        raise TypeError('graph input must be a SGraph object.')
+    from turicreate._cython.cy_server import QuietProgress
 
-    params = _main.run('degree_count', {'graph': graph.__proxy__}, verbose)
+    if not isinstance(graph, _SGraph):
+        raise TypeError('"graph" input must be a SGraph object.')
+
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.degree_count.create(
+            {'graph': graph.__proxy__})
     return DegreeCountingModel(params['model'])

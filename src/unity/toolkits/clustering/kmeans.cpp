@@ -22,7 +22,7 @@ namespace kmeans {
 inline double euclidean(const dense_vector& a, const dense_vector& b) {
   DASSERT_TRUE(a.size() > 0);
   DASSERT_TRUE(a.size() == b.size());
-  return arma::norm(a - b, 2);
+  return std::sqrt((a - b).squaredNorm());
 }
 
 /**
@@ -35,7 +35,7 @@ inline double euclidean(const dense_vector& a, const dense_vector& b) {
 inline double squared_euclidean(const dense_vector& a, const dense_vector& b) {
   DASSERT_TRUE(a.size() > 0);
   DASSERT_TRUE(a.size() == b.size());
-  return squared_norm(a - b);
+  return (a - b).squaredNorm();
 }
 
 
@@ -319,8 +319,7 @@ void kmeans_model::train(const sframe& X,
 
   // Update model state after initialization. This can't be done earlier custom
   // centers cause the metadata to change.
-  std::vector<std::string> unpacked_feature_names =
-    supervised::get_feature_names_from_metadata(metadata);
+  std::vector<std::string> unpacked_feature_names = metadata->feature_names();
 
   add_or_update_state ({ {"num_unpacked_features", metadata->num_dimensions()},
                          {"unpacked_features", to_variant(unpacked_feature_names)} });
@@ -377,7 +376,7 @@ sframe kmeans_model::predict(const sframe& X) {
 
     for (auto it = mld_predict.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
       size_t i = it.row_index();
-      it.fill_row_expr(x);
+      it.fill_observation(x);
 
       for (size_t k = 0; k < num_clusters; ++k) {
         float d = squared_euclidean(x, clusters[k].center);
@@ -576,22 +575,6 @@ void kmeans_model::load_version(turi::iarchive& iarc, size_t version) {
 }
 
 
-/**
- * Clone model
- */
-ml_model_base* kmeans_model::ml_model_base_clone() {
-  return this;
-}
-
-
-/**
- * Return the name of the model
- */
-std::string kmeans_model::name() {
-  return "kmeans";
-}
-
-
 
 // ***************************************
 // *** Private kmeans training methods ***
@@ -661,7 +644,7 @@ void kmeans_model::process_custom_centers(const sframe& init_centers) {
 
   in_parallel([&](size_t thread_idx, size_t num_threads) {
     for (auto it = mld_centers.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
-      it.fill_row_expr(clusters[it.row_index()].center);
+      it.fill_observation(clusters[it.row_index()].center);
     }
   });
 }
@@ -712,7 +695,7 @@ void kmeans_model::choose_random_centers() {
 
     in_parallel([&](size_t thread_idx, size_t num_threads) {
       for (auto it = seed_data.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
-        it.fill_row_expr(clusters[it.row_index()].center);
+        it.fill_observation(clusters[it.row_index()].center);
       }
     });
   }
@@ -731,7 +714,7 @@ void kmeans_model::choose_random_centers() {
     in_parallel([&](size_t thread_idx, size_t num_threads) {
       for (auto it = seed_data.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
         seeds[it.row_index()].resize(metadata->num_dimensions());
-        it.fill_row_expr(seeds[it.row_index()]);
+        it.fill_observation(seeds[it.row_index()]);
       }
     });
 
@@ -908,7 +891,7 @@ size_t kmeans_model::compute_clusters_minibatch() {
 
       for (auto it = batch_data.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
         size_t i = it.row_index();
-        it.fill_row_expr(x);
+        it.fill_observation(x);
         batch_distances[i] = std::numeric_limits<float>::max();
 
         for (size_t k = 0; k < num_clusters; ++k) {
@@ -931,7 +914,7 @@ size_t kmeans_model::compute_clusters_minibatch() {
 
       for (auto it = batch_data.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
         size_t i = it.row_index();
-        it.fill_row_expr(x);
+        it.fill_observation(x);
         clusters[batch_assignments[i]].safe_update_center(x);
       }
     });
@@ -1008,7 +991,7 @@ void kmeans_model::assign_initial_clusters_elkan() {
 
     for(auto it = mldata.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
       size_t i = it.row_index();
-      it.fill_row_expr(x);
+      it.fill_observation(x);
 
       for (size_t k = 0; k < num_clusters; ++k) {
 
@@ -1043,7 +1026,7 @@ void kmeans_model::update_cluster_centers() {
 
     for (auto it = mldata.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
       size_t i = it.row_index();
-      it.fill_row_expr(x);
+      it.fill_observation(x);
       clusters[assignments[i]].safe_update_center(x);
     }
   });
@@ -1067,7 +1050,7 @@ size_t kmeans_model::update_assignments_elkan() {
 
     for (auto it = mldata.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
       size_t i = it.row_index();
-      it.fill_row_expr(x);
+      it.fill_observation(x);
       size_t prev_assignment = assignments[i];
 
       for (size_t k = 0; k < num_clusters; ++k) {
@@ -1110,7 +1093,7 @@ size_t kmeans_model::update_assignments_lloyd() {
 
     for (auto it = mldata.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
       size_t i = it.row_index();
-      it.fill_row_expr(x);
+      it.fill_observation(x);
       size_t prev_assignment = assignments[i];
       upper_bounds[i] = std::numeric_limits<float>::infinity();
 
@@ -1143,13 +1126,12 @@ void kmeans_model::set_exact_point_distances() {
 
     for (auto it = mldata.get_iterator(thread_idx, num_threads); !it.done(); ++it) {
       size_t i = it.row_index();
-      it.fill_row_expr(x);
+      it.fill_observation(x);
 
       upper_bounds[i] = euclidean(x, clusters[assignments[i]].center);
     }
   });
 }
-
 
 } // end of namespace kmeans
 } // end of namespace turi

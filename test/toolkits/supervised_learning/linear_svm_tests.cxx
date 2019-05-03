@@ -11,11 +11,13 @@
 #include <ml_data/ml_data.hpp>
 #include <optimization/optimization_interface.hpp>
 #include <optimization/utils.hpp>
-#include <toolkits/supervised_learning/supervised_learning.hpp>
-#include <toolkits/supervised_learning/linear_svm.hpp>
-#include <toolkits/supervised_learning/linear_svm_opt_interface.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning.hpp>
+#include <unity/toolkits/supervised_learning/linear_svm.hpp>
+#include <unity/toolkits/supervised_learning/linear_svm_opt_interface.hpp>
 #include <sframe/testing_utils.hpp>
 
+#include <unity/toolkits/coreml_export/mlmodel_include.hpp>
+#include <unity/toolkits/coreml_export/MLModel/tests/framework/TestUtils.hpp>
 
 using namespace turi;
 using namespace turi::supervised;
@@ -30,7 +32,7 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
   // Answers
   // -----------------------------------------------------------------------
   DenseVector coefs(features+1);
-  coefs.randn();
+  coefs.setRandom();
 
   // Feature names
   std::vector<std::string> feature_names;
@@ -45,14 +47,14 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
   std::vector<std::vector<flexible_type>> X_data;
   for(size_t i=0; i < examples; i++){
     DenseVector x(features);
-    x.randn();
+    x.setRandom();
     std::vector<flexible_type> x_tmp;
     for(size_t k=0; k < features; k++){
       x_tmp.push_back(x(k));
     }
 
     // Compute the prediction for this
-    double t = dot(x, coefs.subvec(0, features-1)) + coefs(features);
+    double t = x.dot(coefs.segment(0, features)) + coefs(features);
     t = 1.0/(1.0+exp(-1.0*t));
     int c = turi::random::bernoulli(t);
     if (i == 0) c = 0; // Make sure category 0 is category 0 (for testing)
@@ -103,9 +105,8 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
   _pred_class = model->predict(data, "class");
 
   // Save predictions made by the model
-  size_t rows;
   auto reader = _pred_class->get_reader();
-  rows = reader->read_rows(0, examples, pred_class);
+  reader->read_rows(0, examples, pred_class);
 
   // Check that the predictions made by the model are right!
   for(size_t i=0; i < examples; i++){
@@ -114,7 +115,7 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
       x(k) = X_data[i][k];
     }
     x(features) = 1;
-    double t = arma::dot(x, _coefs);
+    double t = x.dot(_coefs);
     int c = t > 0.0;
     TS_ASSERT_EQUALS(pred_class[i], std::to_string(c));
   }
@@ -140,7 +141,7 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
   DenseVector _coefs_after_load(features+1);
   model->get_coefficients(_coefs_after_load);
   TS_ASSERT(_coefs_after_load.size() == features + 1);
-  TS_ASSERT(arma::approx_equal(_coefs_after_load, _coefs,"absdiff", 1e-5));
+  TS_ASSERT(_coefs_after_load.isApprox(_coefs, 1e-5));
   _options = model->get_current_options();
   for (auto& kvp: options){
     TS_ASSERT(_options[kvp.first] == kvp.second);
@@ -152,7 +153,7 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
   // ----------------------------------------------------------------------
   _pred_class = model->predict(data, "class");
   reader = _pred_class->get_reader();
-  rows = reader->read_rows(0, examples, pred_class);
+  reader->read_rows(0, examples, pred_class);
 
   // Check that the predictions made by the model are right!
   for(size_t i=0; i < examples; i++){
@@ -161,13 +162,37 @@ void run_linear_svm_test(std::map<std::string, flexible_type> opts) {
       x(k) = X_data[i][k];
     }
     x(features) = 1;
-    double t = arma::dot(x, _coefs);
+    double t = x.dot(_coefs);
     int c = t > 0.0;
     TS_ASSERT_EQUALS(pred_class[i], std::to_string(c));
   }
 
   model->get_coefficients(_coefs);
   TS_ASSERT(_coefs.size() == features + 1);
+
+  // Test export to coreml
+
+  auto model_wrapped = model->export_to_coreml();
+
+  std::map<std::string, flexible_type> test_metadata = {
+    {"model_type", "linear_svm"},
+    {"version", std::to_string(model->get_version())},
+    {"class", model->name()},
+    {"short_description", "Linear SVM Model."},
+    {"test_key", "test_value"}
+  };
+
+  model_wrapped->add_metadata(test_metadata);
+  model_wrapped->save("save_model.coreml");
+
+  const std::string saved_path("save_model.coreml");
+
+  CoreML::Model open_model;
+  CoreML::Model::load(saved_path, open_model);
+
+  TS_ASSERT(open_model == *(model_wrapped->coreml_model()));
+
+  model_wrapped.reset();
   model.reset();
 }
 
@@ -208,7 +233,7 @@ void run_linear_svm_scaled_logistic_opt_interface_test(std::map<std::string,
   // Answers
   // -----------------------------------------------------------------------
   DenseVector coefs(features+1);
-  coefs.randn();
+  coefs.setRandom();
 
   // Feature names
   std::vector<std::string> feature_names;
@@ -223,14 +248,14 @@ void run_linear_svm_scaled_logistic_opt_interface_test(std::map<std::string,
   std::vector<std::vector<flexible_type>> X_data;
   for(size_t i=0; i < examples; i++){
     DenseVector x(features);
-    x.randn();
+    x.setRandom();
     std::vector<flexible_type> x_tmp;
     for(size_t k=0; k < features; k++){
       x_tmp.push_back(x(k));
     }
 
     // Compute the prediction for this
-    double t = dot(x, coefs.subvec(0, features-1)) + coefs(features);
+    double t = x.dot(coefs.segment(0, features)) + coefs(features);
     t = 1.0/(1.0+exp(-1.0*t));
     int c = turi::random::bernoulli(t);
     std::vector<flexible_type> y_tmp;
@@ -264,13 +289,12 @@ void run_linear_svm_scaled_logistic_opt_interface_test(std::map<std::string,
   for(size_t i=0; i < 10; i++){
 
     DenseVector point(variables);
-    point.randn();
+    point.setRandom();
 
     // Check gradients, functions and hessians.
     DenseVector gradient(variables);
-    double func_value;
 
-    func_value = svm_interface->compute_function_value(point);
+    svm_interface->compute_function_value(point);
     svm_interface->compute_gradient(point, gradient);
   }
 

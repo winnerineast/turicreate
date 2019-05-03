@@ -1,5 +1,5 @@
 {
-  "$schema":"https://vega.github.io/schema/vega/v3.0.json",
+  "$schema": "https://vega.github.io/schema/vega/v4.json",
   "metadata":{
     "bubbleOpts":{
       "showAllFields":false,
@@ -20,14 +20,15 @@
     }
   },
   "width":800,
-  "height":%1%,
-  "padding":0,
+  "height":{{computed_height}},
+  "padding":8,
   "data":[
     {
       "name":"pts_store"
     },
     {
       "name":"source_2"
+      {{pre_filled_data_values}}
     },
     {
       "name":"data_2",
@@ -2560,11 +2561,11 @@
   ],
   "config":{
     "axis":{
-      "labelFont":"HelveticaNeue-Light",
+      "labelFont":"HelveticaNeue-Light, Arial",
       "labelFontSize":7,
       "labelPadding":10,
       "labelColor":"#595959",
-      "titleFont":"HelveticaNeue-Light",
+      "titleFont":"HelveticaNeue-Light, Arial",
       "titleFontWeight":"normal",
       "titlePadding":9,
       "titleFontSize":12,
@@ -2579,7 +2580,7 @@
       },
       "group-title":{
         "fontSize":20,
-        "font":"HelveticaNeue-Light",
+        "font":"HelveticaNeue-Light, Arial",
         "fontWeight":"normal",
         "fill":"#595959"
       }

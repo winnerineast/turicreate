@@ -21,9 +21,9 @@ ANOMALY_DETECTION = ['local_outlier_factor', 'moving_zscore', 'bayesian_changepo
 DATA_MATCHING = ['autotagger', 'deduplication', 'nearest_neighbor_deduplication',
                  'nearest_neighbor_autotagger', 'record_linker', 'similarity_search']
 DATA_STRUCTURES = ['SFrame', 'SArray', 'Graph', 'Vertex', 'Edge']
-GRAPH_ANALYTICS = ['connected_components', 'graph_coloring', 'kcore', 'load_graph', 'pagerank',
+GRAPH_ANALYTICS = ['connected_components', 'graph_coloring', 'kcore', 'load_sgraph', 'pagerank',
                    'triangle_counting',  'shortest_path']
-GENERAL = ['load_model', 'load_sframe', 'Model', 'CustomModel']
+GENERAL = ['load_model', 'load_sframe', 'load_sarray', 'Model', 'CustomModel']
 
 class TuriTests(unittest.TestCase):
     def test_top_level(self):

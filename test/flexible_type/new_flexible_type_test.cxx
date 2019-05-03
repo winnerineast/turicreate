@@ -1,3 +1,8 @@
+/* Copyright © 2017 Apple Inc. All rights reserved.
+ *
+ * Use of this source code is governed by a BSD-3-clause license that can
+ * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
+ */
 #define BOOST_TEST_MODULE
 #include <boost/test/unit_test.hpp>
 #include <util/test_macros.hpp>
@@ -127,7 +132,22 @@ struct new_flexible_type_test  {
       }
 
       // test aliasing
+#ifdef __clang__
+#pragma clang diagnostic push
+#if defined(__has_warning) && __has_warning("-Wself-assign-overloaded")
+/*
+ * This new warning in Xcode 10.2 beta causes an error in our build (since
+ * we have -Werror on), but the thing we're trying to test only makes
+ * sense in the presence of compilers that don't have this error/warning.
+ * So for now, let's just suppress the warning in this test.
+ */
+#pragma clang diagnostic ignored "-Wself-assign-overloaded"
+#endif // __has_warning
+#endif // __clang__
       f = f;
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif // __clang__
       TS_ASSERT_DELTA(f[0], 1.1, 1E-6);
       TS_ASSERT_DELTA(f[1], 2.2, 1E-6);
       for (flexible_type i = 2;i < 12; ++i) {

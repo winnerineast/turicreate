@@ -384,7 +384,11 @@ class SVMClassifier(_Classifier):
         short_description = _coreml_utils._mlmodel_short_description(display_name)
         context = {"class": self.__class__.__name__,
                    "version": _turicreate.__version__,
-                   "short_description": short_description}
+                   "short_description": short_description,
+                   'user_defined':{
+                    'turicreate_version': _turicreate.__version__
+                   }
+                }
         _linear_svm_export_as_model_asset(self.__proxy__, filename, context)
 
     def _get(self, field):
@@ -562,7 +566,7 @@ class SVMClassifier(_Classifier):
         return super(SVMClassifier, self).classify(dataset, missing_value_action=missing_value_action)
 
     
-    def evaluate(self, dataset, metric='auto', missing_value_action='auto'):
+    def evaluate(self, dataset, metric='auto', missing_value_action='auto', with_predictions=False):
         """
         Evaluate the model by making predictions of target values and comparing
         these to actual values.
@@ -631,7 +635,8 @@ class SVMClassifier(_Classifier):
               'f1_score'])
         return super(_Classifier, self).evaluate(dataset,
                                missing_value_action=missing_value_action,
-                               metric=metric)
+                               metric=metric,
+                               with_predictions=with_predictions)
 
     @classmethod
     def _get_queryable_methods(cls):

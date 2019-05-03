@@ -14,13 +14,13 @@ import datetime as dt
 from ..data_structures import image
 from .. import SArray
 import os
-from ..cython.cy_flexible_type import _translate_through_flexible_type as _flexible_type
-from ..cython.cy_flexible_type import _translate_through_flex_list as _tr_flex_list
-from ..cython.cy_flexible_type import infer_type_of_list
-from ..cython.cy_flexible_type import _get_inferred_column_type, _all_convertable
-from ..cython.cy_flexible_type import _check_ft_pyobject_hint_path
-from ..cython.cy_flexible_type import pytype_from_type_name
-from ..util.timezone import GMT
+from .._cython.cy_flexible_type import _translate_through_flexible_type as _flexible_type
+from .._cython.cy_flexible_type import _translate_through_flex_list as _tr_flex_list
+from .._cython.cy_flexible_type import infer_type_of_list
+from .._cython.cy_flexible_type import _get_inferred_column_type, _all_convertable
+from .._cython.cy_flexible_type import _check_ft_pyobject_hint_path
+from .._cython.cy_flexible_type import pytype_from_type_name
+from .._cython.cy_flexible_type import GMT
 import datetime
 from itertools import product
 from copy import copy
@@ -35,7 +35,7 @@ NoneType = type(None)
 current_file_dir = os.path.dirname(os.path.realpath(__file__))
 
 def from_lambda(v):
-    from ..connect import main as glconnect
+    from .._connect import main as glconnect
     u = glconnect.get_unity()
     return u.eval_lambda(lambda x: x, v)
 
@@ -60,7 +60,7 @@ StringValue = ([str('bork'), unicode('bork'), b'bork', b'']
                + [_dt('') for _dt in
                   [np.unicode, np.unicode_, str, unicode, np.str,
                    np.str_, np.string_]])
-                   
+
 special_types.add(id(StringValue))
 
 DictValue = [{'a' : 12}, dict()]
@@ -78,16 +78,14 @@ special_types.add(id(AnyValue))
 FloatSequence = (
     [[0.5, 1.5, 2.5], (0.5, 1.5, 2.5),
      {0.5, 1.5, 2.5}, frozenset([0.5, 1.5, 2.5])]
-    + [array.array(c, [0.5, 1.5, 2.5]) for c in 'fd']
-    + [np.array([0.5, 1.5, 2.5], dtype= _dt) for _dt in np.sctypes['float']])
+    + [array.array(c, [0.5, 1.5, 2.5]) for c in 'fd'])
 special_types.add(id(FloatSequence))
 
 # All the different types of float sequences we support
 FloatSequenceWithNAN = (
     [[0.5, 1.5, 2.5, nan], (0.5, 1.5, 2.5, nan),
      {0.5, 1.5, 2.5, nan}, frozenset([0.5, 1.5, 2.5, nan])]
-    + [array.array(c, [0.5, 1.5, 2.5, nan]) for c in 'fd']
-    + [np.array([0.5, 1.5, 2.5, nan], dtype= _dt) for _dt in np.sctypes['float']])
+    + [array.array(c, [0.5, 1.5, 2.5, nan]) for c in 'fd'])
 special_types.add(id(FloatSequenceWithNAN))
 
 # All the different types of float sequences we support
@@ -104,9 +102,7 @@ IntegerSequence = (
      , set(range(3))
      , frozenset(range(3))
     ]
-    + [array.array(c, range(3)) for c in 'bBhHiIlL']
-    + [np.array(range(3), dtype = _dt) for _dt in np.sctypes['int']]
-    + [np.array(range(3), dtype = _dt) for _dt in np.sctypes['uint']])
+    + [array.array(c, range(3)) for c in 'bBhHiIlL'])
 special_types.add(id(IntegerSequence))
 
 # All the different integer sequences we support, with a Nan
@@ -131,8 +127,7 @@ special_types.add(id(IntegerSequenceWithNone))
 
 # Empty but typed float arrays
 EmptyFloatArray = (
-    [array.array(c, []) for c in 'fd']
-    + [np.array([], dtype= _dt) for _dt in np.sctypes['float']])
+    [array.array(c, []) for c in 'fd'])
 special_types.add(id(EmptyFloatArray))
 
 # Empty but typed integer arrays
@@ -140,9 +135,7 @@ type_codes = 'bBhHiIlL'
 if sys.version_info.major == 2:
     type_codes += 'c'
 EmptyIntegerArray = (
-    [array.array(c, []) for c in type_codes]
-    + [np.array([], dtype= _dt) for _dt in np.sctypes['int']]
-    + [np.array([], dtype= _dt) for _dt in np.sctypes['uint']])
+    [array.array(c, []) for c in type_codes])
 special_types.add(id(EmptyIntegerArray))
 
 # All empty arrays
@@ -156,9 +149,7 @@ special_types.add(id(EmptySequence))
 BooleanSequence = (
     [ list( (i%2 == 0) for i in range(3))
       , tuple( (i%2 == 0) for i in range(3))
-      , set([True]), set([False]), set([True, False])]
-    + [np.array([i%2==0 for i in range(3)], dtype= _dt)
-       for _dt in [np.bool, np.bool_, bool]])
+      , set([True]), set([False]), set([True, False])])
 special_types.add(id(BooleanSequence))
 
 # String sequences
@@ -166,11 +157,7 @@ StringSequence = (
     [ list( str(i) for i in range(3))
       , tuple( str(i) for i in range(3))
     , set( str(i) for i in range(3))
-      , frozenset( str(i) for i in range(3))]
-    + [np.array([_dt('a'), _dt('b')], dtype = _dt)
-       for _dt in [np.unicode, np.unicode_, str, unicode, np.str, np.str_, np.string_]]
-    + [np.array([_dt('a'), _dt('b')], dtype = object)
-       for _dt in [np.unicode, np.unicode_, str, unicode, np.str, np.str_, np.string_]])
+      , frozenset( str(i) for i in range(3))])
 special_types.add(id(StringSequence))
 
 AnySequence = (EmptySequence + BooleanSequence + StringSequence
@@ -222,6 +209,7 @@ def verify_inference(values, expected_type):
                     "\nOutput value = %s"
                     "\nReconverted  = %s")
                    % (str(v_list), str(result), reconverted_result))
+
 
 
 
@@ -310,6 +298,24 @@ class FlexibleTypeInference(unittest.TestCase):
         for tv, res in tests:
             verify_inference(tv, res)
 
+    def test_nparray(self):
+        NPSequence = ([np.array(range(3),'d'), None],
+                      [np.array(range(3),'i'), None],
+                      [np.array(range(3),'f'), None],
+                      [np.array(range(3),'d'), array.array('d',[1,2,3])],
+                      [np.array(range(3),'i'), array.array('d',[1,2,3])],
+                      [np.array(range(3),'f'), array.array('d',[1,2,3])],
+                      [np.array(range(3),'d'), array.array('d',[1,2,3]), None],
+                      [np.array(range(3),'i'), array.array('d',[1,2,3]), None],
+                      [np.array(range(3),'f'), array.array('d',[1,2,3]), None])
+
+        # Run the tests
+        for seq in NPSequence:
+            inferred_type, result = _get_inferred_column_type(seq)
+            self.assertEqual(inferred_type, np.ndarray)
+            reconverted_result = _tr_flex_list(result, inferred_type)
+        
+
 class FlexibleTypeTest(unittest.TestCase):
 
     # On lambda return, if the return value is a non-empty of list of
@@ -381,12 +387,12 @@ class FlexibleTypeTest(unittest.TestCase):
 
         # numpy ndarray
         expected = np.asarray([1, 2, 3])
-        self.assertSequenceEqual(_flexible_type(expected), list(expected))
-        self.assertEqual(from_lambda(expected), array.array('d', expected))
+        self.assertSequenceEqual(list(_flexible_type(expected)), list(expected))
+        self.assertSequenceEqual(list(from_lambda(expected)), array.array('d', expected))
 
         expected = np.asarray([.1, .2, .3])
-        self.assertSequenceEqual(_flexible_type(expected), list(expected))
-        self.assertEqual(from_lambda(expected), array.array('d', expected))
+        self.assertSequenceEqual(list(_flexible_type(expected)), list(expected))
+        self.assertSequenceEqual(list(from_lambda(expected)), array.array('d', expected))
 
     def test_dict(self):
         d = dt.datetime(2010, 10, 10, 10, 10, 10)
@@ -539,4 +545,28 @@ class FlexibleTypeTest(unittest.TestCase):
         self.assertEqual(pytype_from_type_name("undefined"), type(None))
 
         self.assertRaises(ValueError, lambda: pytype_from_type_name("happiness"))
+
+    def test_type_conversions(self):
+        # testing valid sarray of inf's (inf is a float)
+        sa_all_inf = SArray(["inf", "Inf", "iNf", "inF", "INF"])
+        sa_all_inf.astype(float) # should not raise error so we good
+        # testing invalid sarray of float words
+        sa_float_words = SArray(["inf", "infiltrate", "nanana", "2.0version"])
+        with self.assertRaises(RuntimeError):
+            sa_float_words.astype(float)
+        # testing invalid sarray of int words
+        sa_int_words = SArray(["1world", "2dreams", "3000apples"])
+        with self.assertRaises(RuntimeError):
+            sa_int_words.astype(int)
+
+    def test_hashable_dict_keys(self):
+        # Make sure that the keys of a dictionary are actually expressable as keys.
+        sa_dictionary = SArray([{(1,2) : 3}])
+        out = list(sa_dictionary)
+
+        self.assertEqual(out[0][(1,2)], 3)
+
+
+
+
         

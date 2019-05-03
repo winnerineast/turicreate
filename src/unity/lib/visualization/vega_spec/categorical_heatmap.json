@@ -1,205 +1,145 @@
 {
-  "$schema": "https://vega.github.io/schema/vega/v3.0.json",
-  "autosize": "pad",
-  "padding": 5,
-  "width": 480,
-  "height": 280,
-  "title": {
-    "text": %1%,
-    "offset": 90
-  },
-  "style": "cell",
-  "data": [
+  "$schema": "https://vega.github.io/schema/vega/v4.json",
+  "autosize": {"type": "fit", "resize": false, "contains": "padding"},
+  "axes": [
     {
-      "name": "source_2",
-      "values": [
-        {
-          "x": 100000000,
-          "y": "loading_data_from_tc",
-          "count": 0
-        }
-      ]
-    }
-  ],
-  "marks": [
-    {
+      "scale": "x",
+      "title": "{{xlabel}}",
+      "tickCount": {
+        "signal": "min(ceil(width/40), 60)"
+      },
+      "zindex": 1,
+      "labelOverlap": true,
       "encode": {
-        "enter": {
-          "x": {
-            "value": 0
-          },
-          "y": {
-            "value": 0
-          },
-          "height": {
-            "value": 280
-          },
-          "clip": {
-            "value": 0
-          },
-          "fill": {
-            "value": "#ffffff"
-          },
-          "fillOpacity": {
-            "value": 0
+        "labels": {
+          "update": {
+            "align": {
+              "value": "right"
+            },
+            "angle": {
+              "value": 270
+            },
+            "baseline": {
+              "value": "middle"
+            }
           }
         }
       },
-      "marks": [
-        {
-          "name": "marks",
-          "type": "rect",
-          "style": [
-            "rect"
-          ],
-          "from": {
-            "data": "source_2"
-          },
-          "encode": {
-            "update": {
-              "x": {
-                "scale": "x",
-                "field": "x"
-              },
-              "width": {
-                "scale": "x",
-                "band": true
-              },
-              "y": {
-                "scale": "y",
-                "field": "y"
-              },
-              "height": {
-                "scale": "y",
-                "band": true
-              },
-              "fill": {
-                "scale": "color",
-                "field": "count"
-              }
-            }
-          }
-        }
-      ],
-      "type": "group",
-      "scales": [
-        {
-          "name": "x",
-          "type": "band",
-          "domain": {
-            "data": "source_2",
-            "field": "x",
-            "sort": true
-          },
-          "range": [
-            0,
-            480
-          ],
-          "paddingInner": 0.1,
-          "paddingOuter": 0.05
-        },
-        {
-          "name": "y",
-          "type": "band",
-          "domain": {
-            "data": "source_2",
-            "field": "y",
-            "sort": true
-          },
-          "range": [
-            280,
-            0
-          ],
-          "paddingInner": 0.1,
-          "paddingOuter": 0.05
-        },
-        {
-          "name": "color",
-          "type": "sequential",
-          "domain": {
-            "data": "source_2",
-            "field": "count"
-          },
-          "range": "heatmap",
-          "nice": false,
-          "zero": false
-        }
-      ],
-      "axes": [
-        {
-          "scale": "x",
-          "labelOverlap": true,
-          "orient": "bottom",
-          "title": %2%,
-          "zindex": 1,
-          "encode": {
-            "labels": {
-              "update": {
-                "angle": {
-                  "value": 270
-                },
-                "align": {
-                  "value": "right"
-                },
-                "baseline": {
-                  "value": "middle"
-                }
-              }
-            }
-          }
-        },
-        {
-          "scale": "y",
-          "orient": "left",
-          "title": %3%,
-          "zindex": 1
-        }
-      ],
-      "legends": [
-        {
-          "orient": "top",
-          "fill": "color",
-          "title": "Count",
-          "type": "gradient"
-        }
-      ]
+      "orient": "bottom"
+    },
+    {
+      "scale": "y",
+      "title": "{{ylabel}}",
+      "tickCount": {
+        "signal": "min(ceil(height/40), 40)"
+      },
+      "zindex": 1,
+      "labelOverlap": true,
+      "orient": "left"
     }
   ],
-  "config": {
-    "legend": {
-      "titleFont": "HelveticaNeue",
-      "titleColor": "rgba(0,0,0,0.65)",
-      "labelFont": "HelveticaNeue",
-      "labelColor": "rgba(0,0,0,0.65)",
-      "cornerRadius": 30,
-      "gradientWidth": 480
-    },
-    "axis": {
-      "labelFont": "HelveticaNeue",
-      "labelFontSize": 12,
-      "labelPadding": 10,
-      "labelColor": "rgba(0,0,0,0.65)",
-      "titleFont": "HelveticaNeue-Medium",
-      "titleFontWeight": "normal",
-      "titlePadding": 30,
-      "titleFontSize": 15,
-      "titleColor": "rgba(0,0,0,0.65)"
-    },
-    "axisY": {
-      "minExtent": 30
-    },
-    "style": {
-      "group-title": {
-        "fontSize": 29,
-        "font": "HelveticaNeue",
-        "fontWeight": "normal",
-        "fill": "rgba(0,0,0,0.65)"
-      }
-    },
-    "range": {
-      "heatmap": {
-        "scheme": "greenblue"
-      }
+  "legends": [
+    {
+      "titlePadding": 4,
+      "direction": "horizontal",
+      "title": "Count",
+      "titleFontSize": 12,
+      "gradientLength": {
+        "signal": "width"
+      },
+      "type": "gradient",
+      "orient": "top",
+      "fill": "color"
     }
-  }
+  ],
+  "title": {{title}},
+  "scales": [
+    {
+      "range": [
+        0,
+        {
+          "signal": "width"
+        }
+      ],
+      "type": "band",
+      "domain": {
+        "data": "source_2",
+        "field": "x",
+        "sort": true
+      },
+      "zero": false,
+      "name": "x"
+    },
+    {
+      "range": [
+        {
+          "signal": "height"
+        },
+        0
+      ],
+      "type": "band",
+      "domain": {
+        "data": "source_2",
+        "field": "y",
+        "sort": true
+      },
+      "zero": false,
+      "name": "y"
+    },
+    {
+      "domain": {
+        "field": "count",
+        "data": "source_2"
+      },
+      "name": "color",
+      "zero": false,
+      "range": "heatmap",
+      "type": "sequential",
+      "nice": false
+    }
+  ],
+  "height": {{height}},
+  "padding": 8,
+  "width": {{width}},
+  "marks": [
+    {
+      "encode": {
+        "update": {
+          "fill": {
+            "field": "count",
+            "scale": "color"
+          }
+        },
+        "enter": {
+          "y": {
+            "field": "y",
+            "scale": "y"
+          },
+          "x": {
+            "field": "x",
+            "scale": "x"
+          },
+          "height": {
+            "band": true,
+            "scale": "y"
+          },
+          "width": {
+            "band": true,
+            "scale": "x"
+          }
+        }
+      },
+      "from": {
+        "data": "source_2"
+      },
+      "type": "rect"
+    }
+  ],
+  "data": [
+    {
+      "name": "source_2"
+      {{pre_filled_data_values}}
+    }
+  ],
+  {{config}}
 }

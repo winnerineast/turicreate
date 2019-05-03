@@ -38,6 +38,26 @@ namespace turi {
     std::string change_suffix(const std::string& fname,
                                      const std::string& new_suffix);
 
+
+    std::string join(const std::vector<std::string>& components);
+
+    // Generate a path under the system temporary directory.
+    // NOTE: This function (like the underlying boost::filesystem call) does
+    // not guard against race conditions, and therefore should not be used in
+    // security-critical settings.
+    std::string system_temp_directory_unique_path(
+      const std::string& prefix, const std::string& suffix);
+
+    std::string relativize_path(const std::string& path, const std::string& base_path);
+
+    std::vector<std::string> list_directory(const std::string& path);
+
+    void make_directories(const std::string& path);
+
+    void make_directories_strict(const std::string& path);
+
+    void copy_directory_recursive(
+      const std::string& src_path, const std::string& dst_path);
   }; // end of fs_utils
 
 

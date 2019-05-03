@@ -1,9 +1,8 @@
 project(unity_toolkits)
 
-make_library(supervised_learning
+make_library(supervised_learning OBJECT
   SOURCES
     supervised_learning.cpp
-    unity_supervised_learning.cpp
     linear_regression.cpp
     linear_regression_opt_interface.cpp
     logistic_regression.cpp
@@ -16,18 +15,18 @@ make_library(supervised_learning
     random_forest.cpp
     decision_tree.cpp
     xgboost_error.cpp
+    automatic_model_creation.cpp
+    classifier_evaluations.cpp
+    class_registrations.cpp
   REQUIRES
     unity_core
     unity_util
     unity_ml_model
+    unity_coreml_model_export
+    minipsutil_static
     ml_data
     optimization
     xgboost
-    numerics
-  )
-
-set_property(TARGET supervised_learning APPEND_STRING PROPERTY COMPILE_FLAGS " -DXGBOOST_CUSTOMIZE_MSG_")
-
-
-set(CXXNET_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/cxxnet/src)
-message(info "CXXNET_SOURCE_DIR=${CXXNET_SOURCE_DIR}")
+    eigen
+)
+target_compile_definitions(supervised_learning PUBLIC "-DXGBOOST_CUSTOMIZE_MSG_")

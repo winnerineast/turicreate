@@ -1,83 +1,55 @@
-#bin/bash
+#!/bin/bash
 # has to be run from root of the repo
 set -x
 set -e
 
-virtualenv ${PWD}/deps/env
-source ${PWD}/deps/env/bin/activate
+if [[ -z $VIRTUALENV ]]; then
+  VIRTUALENV=virtualenv
+fi
 
-python_scripts=deps/env/bin
+$VIRTUALENV deps/env
+source deps/env/bin/activate
 
-function make_windows_exec_link {
-  targetname=$1/`basename $2 .exe`
-  echo "#!/bin/sh" > $targetname
-  echo "$2 \$@" >> $targetname
-}
+PYTHON="${PWD}/deps/env/bin/python"
+PIP="${PYTHON} -m pip"
+
+PYTHON_MAJOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.major)')
+PYTHON_MINOR_VERSION=$(${PYTHON} -c 'import sys; print(sys.version_info.minor)')
+PYTHON_VERSION="python${PYTHON_MAJOR_VERSION}.${PYTHON_MINOR_VERSION}"
+
+# TODO - not sure why 'm' is necessary here (and not in 2.7)
+# note that PYTHON_VERSION includes the word "python", like "python2.7" or "python3.6"
+PYTHON_FULL_NAME=${PYTHON_VERSION}m
+if [[ "${PYTHON_VERSION}" == "python2.7" ]]; then
+  PYTHON_FULL_NAME=python2.7
+fi
+
 
 function linux_patch_sigfpe_handler {
-if [[ $OSTYPE == linux* ]]; then
-        targfile=deps/local/include/pyfpe.h
-        echo "#undef WANT_SIGFPE_HANDLER" | cat - $targfile > tmp
-        mv -f tmp $targfile
-fi
+  if [[ $OSTYPE == linux* ]]; then
+    targfile=deps/local/include/pyfpe.h
+    if [[ -f $targfile ]]; then
+      echo "#undef WANT_SIGFPE_HANDLER" | cat - $targfile > tmp
+      mv -f tmp $targfile
+    fi
+  fi
 }
 
+$PIP install --upgrade "pip>=8.1"
 
-function download_file {
-  # detect wget
-  echo "Downloading $2 from $1 ..."
-  if [ -z `which wget` ] ; then
-    if [ -z `which curl` ] ; then
-      echo "Unable to find either curl or wget! Cannot proceed with
-            automatic install."
-      exit 1
-    fi
-    curl $1 -o $2
-  else
-    wget $1 -O $2
-  fi
-} # end of download file
+# numpy needs to be installed before everything else so that installing
+# numba (a dependency of resampy) doesn't fail on Python 3.5. This can
+# be removed once numba publishes a Python 3.5 wheel for their most
+# recent version.
+$PIP install numpy==1.11.1
 
-haspython=0
-if [ -e deps/env/bin/python ]; then
-        haspython=1
-fi
-
-if [[ $haspython == 0 ]]; then
-        if [[ $OSTYPE == darwin* ]]; then
-                if [[ ${PYTHON_VERSION} == "python3.4m" ]]; then
-                        echo "Not supported yet"
-                        exit 1
-                elif [[ ${PYTHON_VERSION} == "python3.5m" ]]; then
-                        echo "Not supported yet"
-                        exit 1
-                else
-                        virtualenv deps/env
-                        source deps/env/bin/activate
-                        echo "skip conda"
-                fi
-        else
-                if [[ ${PYTHON_VERSION} == "python3.4m" ]]; then
-                        echo "Not supported yet"
-                        exit 1
-                elif [[ ${PYTHON_VERSION} == "python3.5m" ]]; then
-                        echo "Not supported yet"
-                        exit 1
-                else
-                        virtualenv deps/env
-                        source deps/env/bin/activate
-                        echo "skip conda"
-                fi
-        fi
-fi
-$python_scripts/pip install --upgrade "pip>=8.1"
-$python_scripts/pip install -r scripts/requirements.txt
+$PIP install -r scripts/requirements.txt
 
 mkdir -p deps/local/lib
 mkdir -p deps/local/include
 
 pushd deps/local/include
-for f in `ls ../../env/include/python2.7/*`; do  
+for f in `ls ../../env/include/$PYTHON_FULL_NAME/*`; do  
   ln -Ffs $f
 done
 popd

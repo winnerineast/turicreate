@@ -10,10 +10,13 @@
 #include <unity/toolkits/coreml_export/mldata_exporter.hpp>
 #include <unity/toolkits/coreml_export/coreml_export_utils.hpp>
 
+using turi::coreml::MLModelWrapper;
+
 namespace turi {
 
 
 // Returns the hexadecimal represenation of float in little endian
+__attribute__((unused)) // Unused in debug mode
 static std::string float_to_hexadecimal(float value) {
   unsigned char* p = (unsigned char*)(&value);
   char ret[9];
@@ -22,7 +25,7 @@ static std::string float_to_hexadecimal(float value) {
   bool is_little_endian = true;
   {
     int test = 1;
-    is_little_endian = ((unsigned char*)(&test))[0] != NULL;
+    is_little_endian = ((unsigned char*)(&test))[0] != 0;
   }
   if (is_little_endian) {
     snprintf(ret, 9, "%02X%02X%02X%02X", p[0],p[1],p[2],p[3]);
@@ -42,19 +45,9 @@ static double hexadecimal_to_float(std::string hex) {
   bool is_little_endian = true;
   {
     int test = 1;
-    is_little_endian = ((unsigned char*)(&test))[0] != NULL;
+    is_little_endian = ((unsigned char*)(&test))[0] != 0;
   }
 
-  /*    int val[8];
-        char digits[17] = "0123456789ABCDEF";
-        for(int i = 0; i < 8; ++i) {
-        val[i] = int(std::find(digits, digits+16, hex[i]) - digits);
-        }
-
-        for(int i = 0; i < 4; ++i) {
-        p[i] = val[2*i] + 16 * val[2+i + 1];
-        }
-  */ 
   { 
     int a = 0, b = 0, c = 0, d = 0;
 
@@ -82,13 +75,13 @@ static double hexadecimal_to_float(std::string hex) {
 }
 
 
-void export_xgboost_model(const std::string& filename,
+std::shared_ptr<MLModelWrapper> export_xgboost_model(
     const std::shared_ptr<ml_metadata>& metadata,
     const std::vector<std::string>& trees,
     bool is_classifier, bool is_random_forest,
     const std::map<std::string, flexible_type>& context) {
 
-  CoreML::Pipeline pipeline(
+  auto pipeline = std::make_shared<CoreML::Pipeline>(
       is_classifier
       ? CoreML::Pipeline::Classifier(
             metadata->target_column_name(),
@@ -99,12 +92,12 @@ void export_xgboost_model(const std::string& filename,
           ""));
 
   // set up the pipeline from metadata.
-  setup_pipeline_from_mldata(pipeline, metadata);
-  std::map<size_t, size_t> dict_indices;
+  setup_pipeline_from_mldata(*pipeline, metadata);
+  std::set<size_t> dict_indices;
   for (size_t c = 0; c < metadata->num_columns(); c++) {
     if (metadata->column_type(c) == flex_type_enum::DICT) {
       for (size_t i = 0; i < metadata->index_size(c); i++) {
-          dict_indices[metadata->global_index_offset(c) + i] = 1;
+          dict_indices.insert(metadata->global_index_offset(c) + i);
       }
     }
   }
@@ -126,7 +119,6 @@ void export_xgboost_model(const std::string& filename,
   if(!is_classifier) {
     tree_ensemble.reset(new CoreML::TreeEnsembleRegressor(
         metadata->target_column_name(),
-        "Tree Ensemble",
         "Tree Ensemble"));
 
     num_dimensions = 1;
@@ -140,14 +132,13 @@ void export_xgboost_model(const std::string& filename,
 
   } else {
 
-    auto ti = metadata->target_indexer();
-
-    size_t num_classes = ti->indexed_column_size();
+    // Call the target_index_size, which does not reflect the added dimensions of 
+    // the 
+    size_t num_classes = metadata->target_index_size();
 
     auto tc = new CoreML::TreeEnsembleClassifier(
         metadata->target_column_name(),
         metadata->target_column_name() + "Probability",
-        "Tree Ensemble",
         "Tree Ensemble");
 
     target_additional_name = metadata->target_column_name() + "Probability";
@@ -161,6 +152,8 @@ void export_xgboost_model(const std::string& filename,
       tc->setPostEvaluationTransform(
           CoreML::PostEvaluationTransform::Classification_SoftMax);
     }
+    
+    auto ti = metadata->target_indexer();
 
     if(metadata->target_column_type() == flex_type_enum::STRING) {
       std::vector<std::string> classes(num_classes);
@@ -191,20 +184,22 @@ void export_xgboost_model(const std::string& filename,
   for(const flexible_type& ft : ft_data.range_iterator()) {
     size_t tree_id = tree_counter; // Start from 0
     ++tree_counter;
+
     for(const flexible_type& node_dict_really_raw : ft.get<flex_list>() ) {
+
       const flex_dict& node_dict_raw = node_dict_really_raw.get<flex_dict>();
 
       std::map<flex_string, flexible_type> node_dict(node_dict_raw.begin(), node_dict_raw.end());
+
       flex_int node_id = node_dict.at("id").get<flex_int>();
       flex_string type = node_dict.at("type").get<flex_string>();
-      flex_float value = node_dict.at("value").to<flex_float>();
 
       // Get the exact non-lossy double value and use that.  But it's stored as an
       flex_float exact_value = hexadecimal_to_float(node_dict.at("value_hexadecimal").get<flex_string>());
 
       if(type == "leaf") {
         if(is_random_forest) {
-          size_t num_classes = metadata->target_indexer()->indexed_column_size();
+          size_t num_classes = metadata->target_index_size();
           size_t num_trees_per_class;
           if (num_classes <= 2) {
             num_trees_per_class = trees.size();
@@ -213,6 +208,7 @@ void export_xgboost_model(const std::string& filename,
           }
           exact_value /= num_trees_per_class;
         }
+
         tree_ensemble->setupLeafNode(tree_id, node_id,
                                      { {tree_id % num_dimensions, exact_value} });
       } else {
@@ -224,60 +220,49 @@ void export_xgboost_model(const std::string& filename,
 
         size_t feature_index = 0;
 
-        size_t n = sscanf(feature_name.c_str(), "{%zd}\0", &feature_index);
+        size_t n = sscanf(feature_name.c_str(), "{%zd}", &feature_index);
         ASSERT_EQ(n, 1);
 
-        // This means that we need to swap out the no and the missing columns.
-        if(feature_type == "indicator") {
-          tree_ensemble->setupBranchNode(
-              tree_id,
-              node_id,
-              size_t(feature_index),
-              CoreML::BranchMode::BranchOnValueEqual,
-              1,
-              yes_child, missing_child);
-        // For dictionaries, set the threshold separately
-        } else if(dict_indices.find(size_t(feature_index)) != dict_indices.end()) {
-          tree_ensemble->setupBranchNode(
-              tree_id,
-              node_id,
-              size_t(feature_index),
-              CoreML::BranchMode::BranchOnValueLessThanEqual,
-              0,
-              missing_child, no_child);
-        } else {
-          tree_ensemble->setupBranchNode(
-              tree_id,
-              node_id,
-              size_t(feature_index),
-              CoreML::BranchMode::BranchOnValueLessThanEqual,
-              exact_value,
-              yes_child, no_child);
-        }
+        tree_ensemble->setupBranchNode(
+            tree_id, node_id, size_t(feature_index),
+            CoreML::BranchMode::BranchOnValueLessThanEqual, exact_value,
+            yes_child, no_child);
+
+        tree_ensemble->setMissingValueBehavior(tree_id, node_id,
+                                               (missing_child != yes_child));
       }
     }
   }
 
   // This output is provided by __vectorized_features__.
   tree_ensemble->addInput("__vectorized_features__",
-                          CoreML::FeatureType::Array({metadata->num_dimensions()}));
+                          CoreML::FeatureType::Array({static_cast<int64_t>(metadata->num_dimensions())}));
   tree_ensemble->addOutput(metadata->target_column_name(), target_output_data_type);
   if(is_classifier)
     tree_ensemble->addOutput(target_additional_name, target_additional_data_type);
   tree_ensemble->finish();
 
-  pipeline.add(*tree_ensemble);
-  pipeline.addOutput(metadata->target_column_name(), target_output_data_type);
+  pipeline->add(*tree_ensemble);
+  pipeline->addOutput(metadata->target_column_name(), target_output_data_type);
   if(is_classifier)
-    pipeline.addOutput(target_additional_name, target_additional_data_type);
+    pipeline->addOutput(target_additional_name, target_additional_data_type);
 
   // Add metadata
-  add_metadata(pipeline.m_spec, context);
+  add_metadata(pipeline->getProto(), context);
 
-  CoreML::Result r = pipeline.save(filename);
-  if(!r.good()) {
-    log_and_throw("Could not export model: " + r.message());
-  }
+  return std::make_shared<MLModelWrapper>(std::move(pipeline));
+}
+
+void export_xgboost_model(const std::string& filename,
+    const std::shared_ptr<ml_metadata>& metadata,
+    const std::vector<std::string>& trees,
+    bool is_classifier, bool is_random_forest,
+    const std::map<std::string, flexible_type>& context) {
+
+  std::shared_ptr<MLModelWrapper> coreml_model =
+      export_xgboost_model(metadata, trees, is_classifier, is_random_forest,
+                           context);
+  coreml_model->save(filename);
 }
 
 } // End namespace.

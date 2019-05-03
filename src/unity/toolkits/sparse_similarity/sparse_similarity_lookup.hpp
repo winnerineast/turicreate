@@ -7,7 +7,7 @@
 #define TURI_UNITY_ITEM_SIMILARITY_LOOKUP_H_
 
 #include <flexible_type/flexible_type.hpp>
-#include <unity/toolkits/options/option_manager.hpp>
+#include <unity/lib/extensions/option_manager.hpp>
 
 namespace turi {
 
@@ -69,6 +69,8 @@ template <typename T> class sarray;
  */
 class sparse_similarity_lookup {
  public:
+
+  virtual ~sparse_similarity_lookup() = default;
 
   /** Returns the name of the similarity this version uses.
    */

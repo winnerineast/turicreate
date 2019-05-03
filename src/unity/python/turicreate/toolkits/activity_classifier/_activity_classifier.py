@@ -12,7 +12,6 @@ from __future__ import division as _
 
 import numpy as _np
 import time as _time
-import sys as _sys
 import six as _six
 
 from turicreate import SArray as _SArray, SFrame as _SFrame
@@ -23,12 +22,12 @@ from turicreate.toolkits import _coreml_utils
 import turicreate.toolkits._feature_engineering._internal_utils as _fe_tkutl
 from turicreate.toolkits._main import ToolkitError as _ToolkitError
 from turicreate.toolkits import evaluation as _evaluation
-from .. import _mxnet_utils
 
 from turicreate.toolkits._model import CustomModel as _CustomModel
 from turicreate.toolkits._model import PythonProxy as _PythonProxy
 
 from .util import random_split_by_session as _random_split_by_session
+from .util import _MIN_NUM_SESSIONS_FOR_SPLIT
 
 
 def create(dataset, session_id, target, features=None, prediction_window=100,
@@ -108,7 +107,7 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
         ... })
 
         # Create an activity classifier
-        >>> model = tc.activity_classifier.create(train,
+        >>> model = tc.activity_classifier.create(data,
         ...     session_id='session_id', target='activity',
         ...     features=['accelerometer_x', 'accelerometer_y', 'accelerometer_z'])
 
@@ -131,10 +130,16 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     ActivityClassifier, util.random_split_by_session
     """
     _tkutl._raise_error_if_not_sframe(dataset, "dataset")
-    from ._model_architecture import _net_params
-    from ._model_architecture import _define_model, _fit_model
+    from .._mxnet import _mxnet_utils
+    from ._mx_model_architecture import _net_params
     from ._sframe_sequence_iterator import SFrameSequenceIter as _SFrameSequenceIter
     from ._sframe_sequence_iterator import prep_data as _prep_data
+    from ._mx_model_architecture import _define_model_mxnet, _fit_model_mxnet
+    from ._mps_model_architecture import _define_model_mps, _fit_model_mps
+    from .._mps_utils import (use_mps as _use_mps,
+                              mps_device_name as _mps_device_name,
+                              ac_weights_mps_to_mxnet as _ac_weights_mps_to_mxnet)
+
 
     if not isinstance(target, str):
         raise _ToolkitError('target must be of type str')
@@ -160,6 +165,18 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     _tkutl._raise_error_if_sarray_not_expected_dtype(dataset[target], target, [str, int])
     _tkutl._raise_error_if_sarray_not_expected_dtype(dataset[session_id], session_id, [str, int])
 
+    if isinstance(validation_set, str) and validation_set == 'auto':
+        # Computing the number of unique sessions in this way is relatively
+        # expensive. Ideally we'd incorporate this logic into the C++ code that
+        # chunks the raw data by prediction window.
+        # TODO: https://github.com/apple/turicreate/issues/991
+        unique_sessions = _SFrame({'session': dataset[session_id].unique()})
+        if len(unique_sessions) < _MIN_NUM_SESSIONS_FOR_SPLIT:
+            print ("The dataset has less than the minimum of", _MIN_NUM_SESSIONS_FOR_SPLIT, "sessions required for train-validation split. Continuing without validation set")
+            validation_set = None
+        else:
+            dataset, validation_set = _random_split_by_session(dataset, session_id)
+
     # Encode the target column to numerical values
     use_target = target is not None
     dataset, target_map = _encode_target(dataset, target)
@@ -168,49 +185,73 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     chunked_data, num_sessions = _prep_data(dataset, features, session_id, prediction_window,
                                             predictions_in_chunk, target=target, verbose=verbose)
 
-    if isinstance(validation_set, str) and validation_set == 'auto':
-        if num_sessions < 100:
-            validation_set = None
+    # Decide whether to use MPS GPU, MXnet GPU or CPU
+    num_mxnet_gpus = _mxnet_utils.get_num_gpus_in_use(max_devices=num_sessions)
+    use_mps = _use_mps() and num_mxnet_gpus == 0
+
+    if verbose:
+        if use_mps:
+            print('Using GPU to create model ({})'.format(_mps_device_name()))
+        elif num_mxnet_gpus == 1:
+            print('Using GPU to create model (CUDA)')
+        elif num_mxnet_gpus > 1:
+            print('Using {} GPUs to create model (CUDA)'.format(num_mxnet_gpus))
         else:
-            dataset, validation_set = _random_split_by_session(dataset, session_id)
+            print('Using CPU to create model')
 
     # Create data iterators
-    num_gpus = _mxnet_utils.get_num_gpus_in_use(max_devices=num_sessions)
     user_provided_batch_size = batch_size
-    batch_size = max(batch_size, num_gpus, 1)
+    batch_size = max(batch_size, num_mxnet_gpus, 1)
+    use_mx_data_batch = not use_mps
     data_iter = _SFrameSequenceIter(chunked_data, len(features),
                                     prediction_window, predictions_in_chunk,
-                                    batch_size, use_target=use_target)
+                                    batch_size, use_target=use_target, mx_output=use_mx_data_batch)
 
     if validation_set is not None:
         _tkutl._raise_error_if_not_sframe(validation_set, 'validation_set')
         _tkutl._raise_error_if_sframe_empty(validation_set, 'validation_set')
         validation_set = _tkutl._toolkits_select_columns(
             validation_set, features + [session_id, target])
-        validation_set = validation_set.filter_by(target_map.keys(), target)
+        validation_set = validation_set.filter_by(list(target_map.keys()), target)
         validation_set, mapping = _encode_target(validation_set, target, target_map)
         chunked_validation_set, _ = _prep_data(validation_set, features, session_id, prediction_window,
                                             predictions_in_chunk, target=target, verbose=False)
 
         valid_iter = _SFrameSequenceIter(chunked_validation_set, len(features),
                                     prediction_window, predictions_in_chunk,
-                                    batch_size, use_target=use_target)
+                                    batch_size, use_target=use_target, mx_output=use_mx_data_batch)
     else:
         valid_iter = None
 
     # Define model architecture
     context = _mxnet_utils.get_mxnet_context(max_devices=num_sessions)
-    loss_model, pred_model = _define_model(features, target_map, prediction_window,
-                                           predictions_in_chunk, context)
 
-    # Train the model
-    log = _fit_model(loss_model, data_iter, valid_iter,
-                     max_iterations, num_gpus, verbose)
+    # Always create MXnet models, as the pred_model is later saved to the state
+    # If MPS is used - the loss_model will be overwritten
+    loss_model, pred_model = _define_model_mxnet(len(target_map), prediction_window,
+                                                 predictions_in_chunk, context)
+
+    if use_mps:
+        loss_model = _define_model_mps(batch_size, len(features), len(target_map),
+                                       prediction_window, predictions_in_chunk, is_prediction_model=False)
+
+        log = _fit_model_mps(loss_model, data_iter, valid_iter, max_iterations, verbose)
+
+    else:
+        # Train the model using Mxnet
+        log = _fit_model_mxnet(loss_model, data_iter, valid_iter,
+                         max_iterations, num_mxnet_gpus, verbose)
 
     # Set up prediction model
     pred_model.bind(data_shapes=data_iter.provide_data, label_shapes=None,
                     for_training=False)
-    arg_params, aux_params = loss_model.get_params()
+
+    if use_mps:
+        mps_params = loss_model.export()
+        arg_params, aux_params = _ac_weights_mps_to_mxnet(mps_params, _net_params['lstm_h'])
+    else:
+        arg_params, aux_params = loss_model.get_params()
+
     pred_model.init_params(arg_params=arg_params, aux_params=aux_params)
 
     # Save the model
@@ -267,34 +308,29 @@ class ActivityClassifier(_CustomModel):
         self.__proxy__ = _PythonProxy(state)
 
     def _get_native_state(self):
+        from .._mxnet import _mxnet_utils
         state = self.__proxy__.get_state()
         state['_pred_model'] = _mxnet_utils.get_mxnet_state(state['_pred_model'])
         return state
 
     @classmethod
     def _load_version(cls, state, version):
+        from ._mx_model_architecture import _define_model_mxnet
+        from .._mxnet import _mxnet_utils
+
         _tkutl._model_version_check(version, cls._PYTHON_ACTIVITY_CLASSIFIER_VERSION)
 
         data_seq_len = state['prediction_window'] * state['_predictions_in_chunk']
-        data = {'data': (state['_recalibrated_batch_size'], data_seq_len, len(state['features']))}
-        labels = [
-            ('target', (state['_recalibrated_batch_size'], state['_predictions_in_chunk'], 1)),
-            ('weights', (state['_recalibrated_batch_size'], state['_predictions_in_chunk'], 1))
-        ]
 
-        from ._model_architecture import _define_model
-        import mxnet as _mx
         context = _mxnet_utils.get_mxnet_context(max_devices=state['num_sessions'])
-        _, _pred_model = _define_model(state['features'], state['_target_id_map'], 
-                                       state['prediction_window'],
-                                       state['_predictions_in_chunk'], context)
+        _, _pred_model = _define_model_mxnet(len(state['_target_id_map']), state['prediction_window'],
+                                             state['_predictions_in_chunk'], context)
 
         batch_size = state['batch_size']
         preds_in_chunk = state['_predictions_in_chunk']
         win = state['prediction_window'] * preds_in_chunk
         num_features = len(state['features'])
         data_shapes = [('data', (batch_size, win, num_features))]
-        target_shape= (batch_size, preds_in_chunk, 1)
 
         _pred_model.bind(data_shapes=data_shapes, label_shapes=None,
                          for_training=False)
@@ -314,19 +350,20 @@ class ActivityClassifier(_CustomModel):
 
     def export_coreml(self, filename):
         """
-        Save the model in Core ML format.
+        Export the model in Core ML format.
 
-        See Also
-        --------
-        save
+        Parameters
+        ----------
+        filename: str
+          A valid filename where the model can be saved.
 
         Examples
         --------
-        >>> model.export_coreml('myModel.mlmodel')
+        >>> model.export_coreml("MyModel.mlmodel")
         """
         import coremltools as _cmt
         import mxnet as _mx
-        from ._model_architecture import _define_model, _fit_model, _net_params
+        from ._mx_model_architecture import _net_params
 
         prob_name = self.target + 'Probability'
         label_name = self.target
@@ -546,16 +583,39 @@ class ActivityClassifier(_CustomModel):
         from ._sframe_sequence_iterator import prep_data as _prep_data
 
         from ._sframe_sequence_iterator import _ceil_dev
+        from ._mx_model_architecture import _net_params
+        from ._mps_model_architecture import _define_model_mps, _predict_mps
+        from .._mps_utils import (use_mps as _use_mps,
+                                  ac_weights_mxnet_to_mps as _ac_weights_mxnet_to_mps,)
+        from .._mxnet import _mxnet_utils
 
         prediction_window = self.prediction_window
-        chunked_dataset, _ = _prep_data(dataset, self.features, self.session_id, prediction_window,
-                                     self._predictions_in_chunk, verbose=False)
+        chunked_dataset, num_sessions = _prep_data(dataset, self.features, self.session_id, prediction_window,
+                                                    self._predictions_in_chunk, verbose=False)
+
+        # Decide whether to use MPS GPU, MXnet GPU or CPU
+        num_mxnet_gpus = _mxnet_utils.get_num_gpus_in_use(max_devices=num_sessions)
+        use_mps = _use_mps() and num_mxnet_gpus == 0
+
         data_iter = _SFrameSequenceIter(chunked_dataset, len(self.features),
                                         prediction_window, self._predictions_in_chunk,
-                                        self._recalibrated_batch_size, use_pad=True)
+                                        self._recalibrated_batch_size, use_pad=True, mx_output=not use_mps)
+
+
+
+        if use_mps:
+            arg_params, aux_params = self._pred_model.get_params()
+            mps_params = _ac_weights_mxnet_to_mps(arg_params, aux_params, _net_params['lstm_h'])
+            mps_pred_model = _define_model_mps(self.batch_size, len(self.features), len(self._target_id_map),
+                                               prediction_window, self._predictions_in_chunk, is_prediction_model=True)
+
+            mps_pred_model.load(mps_params)
+
+            preds = _predict_mps(mps_pred_model, data_iter)
+        else:
+            preds = self._pred_model.predict(data_iter).asnumpy()
 
         chunked_data = data_iter.dataset
-        preds = self._pred_model.predict(data_iter).asnumpy()
 
         if output_frequency == 'per_row':
             # Replicate each prediction times prediction_window
@@ -581,7 +641,7 @@ class ActivityClassifier(_CustomModel):
             # remove predictions for padded data
             unpadded_len = chunked_data['chunk_len'].apply(
                 lambda l: _ceil_dev(l, prediction_window)).to_numpy()
-            preds = [p[:unpadded_len[i]] for i, p in enumerate(preds)]
+            preds = [list(p[:unpadded_len[i]]) for i, p in enumerate(preds)]
 
             out = _SFrame({
                 self.session_id: chunked_data['session_id'],
@@ -666,7 +726,7 @@ class ActivityClassifier(_CustomModel):
         if 'accuracy' in metrics:
             ret['accuracy'] = _evaluation.accuracy(dataset[self.target], classes)
         if 'auc' in metrics:
-            ret['auc'] = _evaluation.auc(dataset[self.target], probs)
+            ret['auc'] = _evaluation.auc(dataset[self.target], probs, index_map=self._target_id_map)
         if 'precision' in metrics:
             ret['precision'] = _evaluation.precision(dataset[self.target], classes)
         if 'recall' in metrics:
@@ -674,11 +734,11 @@ class ActivityClassifier(_CustomModel):
         if 'f1_score' in metrics:
             ret['f1_score'] = _evaluation.f1_score(dataset[self.target], classes)
         if 'log_loss' in metrics:
-            ret['log_loss'] = _evaluation.log_loss(dataset[self.target], probs)
+            ret['log_loss'] = _evaluation.log_loss(dataset[self.target], probs, index_map=self._target_id_map)
         if 'confusion_matrix' in metrics:
             ret['confusion_matrix'] = _evaluation.confusion_matrix(dataset[self.target], classes)
         if 'roc_curve' in metrics:
-            ret['roc_curve'] = _evaluation.roc_curve(dataset[self.target], probs)
+            ret['roc_curve'] = _evaluation.roc_curve(dataset[self.target], probs, index_map=self._target_id_map)
 
         return ret
 

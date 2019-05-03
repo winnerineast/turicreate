@@ -6,16 +6,12 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
-import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
 import copy as _copy
 
-_HAS_IPYTHON = True
-try:
-    import IPython.core.display as _IPython
-except:
-    _HAS_IPYTHON = False
 
 class ShortestPathModel(_ModelBase):
     """
@@ -169,10 +165,9 @@ class ShortestPathModel(_ModelBase):
         #     return (src, edge, dst)
         #
         # the internal lambda appear to have some issues.
-        import turicreate
         traverse_fun = lambda src, edge, dst:  \
-            turicreate.extensions._toolkits.graph.sssp.shortest_path_traverse_function(src, edge, dst,
-                    source_vid, weight_field)
+            _tc.extensions._toolkits.graph.sssp.shortest_path_traverse_function(
+                src, edge, dst, source_vid, weight_field)
 
         g = g.triple_apply(traverse_fun, ['__parent__'])
         query_table = query_table.join(g.get_vertices()[['__id', '__parent__']], '__id').sort('row_id')
@@ -231,7 +226,7 @@ def create(graph, source_vid, weight_field="", max_distance=1e30, verbose=True):
     If given an :class:`~turicreate.SGraph` ``g``, we can create
     a :class:`~turicreate.shortest_path.ShortestPathModel` as follows:
 
-    >>> g = turicreate.load_graph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
+    >>> g = turicreate.load_sgraph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
     >>> sp = turicreate.shortest_path.create(g, source_vid=1)
 
     We can obtain the shortest path distance from the source vertex to each
@@ -261,12 +256,15 @@ def create(graph, source_vid, weight_field="", max_distance=1e30, verbose=True):
     --------
     ShortestPathModel
     """
+    from turicreate._cython.cy_server import QuietProgress
+
     if not isinstance(graph, _SGraph):
         raise TypeError('graph input must be a SGraph object.')
 
     opts = {'source_vid': source_vid, 'weight_field': weight_field,
             'max_distance': max_distance, 'graph': graph.__proxy__}
-    params = _main.run('sssp', opts, verbose)
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.sssp.create(opts)
     return ShortestPathModel(params['model'])
 
 
@@ -326,5 +324,5 @@ def _compute_shortest_path(graph, source_vids, dest_vids, weight_field=""):
         source_vids = [source_vids]
     if type(dest_vids) != list:
         dest_vids = [dest_vids]
-    import turicreate
-    return turicreate.SArray(turicreate.extensions._toolkits.graph.sssp.all_shortest_paths(graph, source_vids, dest_vids, weight_field))
+    return _tc.extensions._toolkits.graph.sssp.all_shortest_paths(
+        graph, source_vids, dest_vids, weight_field)

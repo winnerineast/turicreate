@@ -6,8 +6,8 @@
 #include <string>
 #include <iostream>
 #include <fstream>
-#include <unity/lib/toolkit_function_macros.hpp>
 #include <unity/lib/toolkit_class_macros.hpp>
+#include <unity/lib/extensions/model_base.hpp>
 #include <fileio/temp_files.hpp>
 
 
@@ -16,7 +16,7 @@ namespace python_model {
 
 const size_t PICKLER_READ_WRITE_BUFFER_SIZE = 65536;
 
-class python_model : public toolkit_class_base {
+class python_model : public model_base {
 
   static constexpr size_t PYTHON_MODEL_VERSION = 0;
 
@@ -26,7 +26,7 @@ class python_model : public toolkit_class_base {
 
   public:
 
-  virtual void save_impl(oarchive& oarc) const  {
+  virtual void save_impl(oarchive& oarc) const override {
 
     // Read from pickle file (path: temp_file)
     std::ifstream in_file(temp_file, std::ios::binary);
@@ -53,15 +53,15 @@ class python_model : public toolkit_class_base {
   /**
    * Get a version for the object.
    */
-  size_t get_version() const {
+  size_t get_version() const override {
     return PYTHON_MODEL_VERSION;
   }
   /**
    * Load the object using Turi's iarc.
    */
-  virtual void load_version(iarchive& iarc, size_t version) {
+  virtual void load_version(iarchive& iarc, size_t version) override {
     std::string language;
-    unsigned int bytes = 0, file_size = 0;
+    unsigned int file_size = 0;
 
     // Read out the language and file-size.
     iarc >> language >> file_size;

@@ -36,23 +36,13 @@ class EXPORT brute_force_neighbors: public nearest_neighbors_model {
   ~brute_force_neighbors();
 
   /**
-   * Clone objects to a nearest_neighbors_model class
-   */
-  nearest_neighbors_model* nearest_neighbors_clone();
-
-  /**
-   * Return the name of the model.
-   */
-  std::string name();
-
-  /**
    * Set the model options. Use the option manager to set these options. The
    * option manager should throw errors if the options do not satisfy the option
    * manager's conditions.
    *
    * \param[in] opts Options to set 
    */ 
-  void init_options(const std::map<std::string,flexible_type>& _opts);
+  void init_options(const std::map<std::string,flexible_type>& _opts) override;
 
   /**
    * Create a brute force nearest neighbors model.
@@ -64,7 +54,7 @@ class EXPORT brute_force_neighbors: public nearest_neighbors_model {
    */
   void train(const sframe& X, const std::vector<flexible_type>& ref_labels,
              const std::vector<dist_component_type>& composite_distance_params,
-             const std::map<std::string, flexible_type>& opts);
+             const std::map<std::string, flexible_type>& opts) override;
 
   /**
    * Find neighbors of queries in a created brute_force model. Depending on data
@@ -84,7 +74,7 @@ class EXPORT brute_force_neighbors: public nearest_neighbors_model {
   sframe query(const v2::ml_data& mld_queries, 
                const std::vector<flexible_type>& query_labels,
                const size_t k, const double radius,
-               const bool include_self_edges) const;
+               const bool include_self_edges) const override;
 
   /**
    * Search a nearest neighbors reference object for the neighbors of every
@@ -98,7 +88,7 @@ class EXPORT brute_force_neighbors: public nearest_neighbors_model {
    * \returns ret   Shared pointer to an SFrame containing query results.
    */
   sframe similarity_graph(const size_t k, const double radius,
-                          const bool include_self_edges) const;
+                          const bool include_self_edges) const override;
 
   /**
    * Find neighbors of queries in a created brute_force model. Break the
@@ -148,21 +138,26 @@ class EXPORT brute_force_neighbors: public nearest_neighbors_model {
                                   const std::string& dist_name) const;
 
 
-  inline size_t get_version() const {
+  inline size_t get_version() const override {
     return BRUTE_FORCE_NEIGHBORS_VERSION;
   }
 
   /**
    * Turi serialization save
    */
-  void save_impl(turi::oarchive& oarc) const;
+  void save_impl(turi::oarchive& oarc) const override;
 
   /**
    * Turi serialization save
    */
-  void load_version(turi::iarchive& iarc, size_t version);
+  void load_version(turi::iarchive& iarc, size_t version) override;
+  
+  // TODO: convert interface above to use the extensions methods here
+  BEGIN_CLASS_MEMBER_REGISTRATION("nearest_neighbors_brute_force")
+  REGISTER_CLASS_MEMBER_FUNCTION(brute_force_neighbors::list_fields)
+  END_CLASS_MEMBER_REGISTRATION
 
-};
+}; 
 
 
 }  // namespace nearest_neighbors

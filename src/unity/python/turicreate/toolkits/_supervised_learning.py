@@ -13,11 +13,11 @@ from __future__ import absolute_import as _
 import turicreate as _turicreate
 
 from turicreate.toolkits._model import Model
-from turicreate.toolkits._internal_utils import _toolkits_select_columns
 from turicreate.toolkits._internal_utils import _raise_error_if_not_sframe
-from turicreate.toolkits._internal_utils import _map_unity_proxy_to_object
 from turicreate.toolkits._internal_utils import _SGraphFromJsonTree
+from turicreate.toolkits._internal_utils import _validate_data
 from turicreate.toolkits._main import ToolkitError
+from turicreate._cython.cy_server import QuietProgress
 
 class SupervisedLearningModel(Model):
     """
@@ -25,7 +25,6 @@ class SupervisedLearningModel(Model):
     several feature variables.
     """
     def __init__(self, model_proxy=None, name=None):
-        """__init__(self)"""
         self.__proxy__ = model_proxy
         self.__name__ = name
 
@@ -103,32 +102,21 @@ class SupervisedLearningModel(Model):
 
         # Low latency path
         if isinstance(dataset, list):
-            return _turicreate.extensions._fast_predict(self.__proxy__, dataset,
-                    output_type, missing_value_action)
+            return self.__proxy__.fast_predict(
+                dataset, missing_value_action, output_type)
         if isinstance(dataset, dict):
-            return _turicreate.extensions._fast_predict(self.__proxy__, [dataset],
-                    output_type, missing_value_action)
+            return self.__proxy__.fast_predict(
+                [dataset], missing_value_action, output_type)
 
         # Batch predictions path
         else:
             _raise_error_if_not_sframe(dataset, "dataset")
 
-            options = options.copy()
-            options.update(kwargs)
-
-            options.update({'model': self.__proxy__,
-                            'model_name': self.__name__,
-                            'dataset': dataset,
-                            'missing_value_action' : missing_value_action,
-                            'output_type' : output_type
-                            })
-
-            target = _turicreate.toolkits._main.run(
-                      'supervised_learning_predict', options)
-            return _map_unity_proxy_to_object(target['predicted'])
+            return self.__proxy__.predict(
+                dataset, missing_value_action, output_type)
 
     def evaluate(self, dataset, metric="auto",
-                 missing_value_action='auto', options={}, **kwargs):
+                 missing_value_action='auto', with_predictions=False, options={}, **kwargs):
         """
         Evaluate the model by making predictions of target values and comparing
         these to actual values.
@@ -166,19 +154,10 @@ class SupervisedLearningModel(Model):
                                                              self, 'evaluate')
 
         _raise_error_if_not_sframe(dataset, "dataset")
-        options = options.copy()
-        options.update(kwargs)
-
-        options.update({'model': self.__proxy__,
-                        'dataset': dataset,
-                        'model_name': self.__name__,
-                        'missing_value_action': missing_value_action,
-                        'metric': metric
-                        })
-        results = _turicreate.toolkits._main.run(
-                'supervised_learning_evaluate', options)
-        return _map_unity_proxy_to_object(results)
-
+        results = self.__proxy__.evaluate(
+            dataset, missing_value_action, metric, with_predictions=with_predictions);
+        return results
+        
     def _training_stats(self):
         """
         Return a dictionary containing statistics collected during model
@@ -188,9 +167,7 @@ class SupervisedLearningModel(Model):
         Notes
         -----
         """
-        opts = {'model': self.__proxy__, 'model_name': self.__name__}
-        results = _turicreate.toolkits._main.run("supervised_learning_get_train_stats", opts)
-        return _map_unity_proxy_to_object(results)
+        return self.__proxy__.get_train_stats()
 
     def _get(self, field):
         """
@@ -206,11 +183,7 @@ class SupervisedLearningModel(Model):
         out : [various]
             The current value of the requested field.
         """
-        opts = {'model': self.__proxy__,
-                'model_name': self.__name__,
-                'field': field}
-        response = _turicreate.toolkits._main.run('supervised_learning_get_value', opts)
-        return _map_unity_proxy_to_object(response['value'])
+        return self.__proxy__.get_value(field)
 
     @classmethod
     def _get_queryable_methods(cls):
@@ -264,21 +237,12 @@ class Classifier(SupervisedLearningModel):
 
         # Low latency path
         if isinstance(dataset, list):
-            return _turicreate.extensions._fast_classify(self.__proxy__, dataset,
-                    missing_value_action)
+            return self.__proxy__.fast_classify(dataset, missing_value_action)
         if isinstance(dataset, dict):
-            return _turicreate.extensions._fast_classify(self.__proxy__, [dataset],
-                    missing_value_action)
+            return self.__proxy__.fast_classify([dataset], missing_value_action)
 
         _raise_error_if_not_sframe(dataset, "dataset")
-        options = {}
-        options.update({'model': self.__proxy__,
-                        'model_name': self.__name__,
-                        'dataset': dataset,
-                        'missing_value_action': missing_value_action,
-                        })
-        target = _turicreate.toolkits._main.run('supervised_learning_classify', options)
-        return _map_unity_proxy_to_object(target['classify'])
+        return self.__proxy__.classify(dataset, missing_value_action)
 
     @classmethod
     def _get_queryable_methods(cls):
@@ -320,7 +284,6 @@ def create(dataset, target, model_name, features=None,
         List of feature names used by feature column
 
     validation_set : SFrame, optional
-
         A dataset for monitoring the model's generalization performance.
         For each row of the progress table, the chosen metrics are computed
         for both the provided training dataset and the validation_set. The
@@ -344,117 +307,31 @@ def create(dataset, target, model_name, features=None,
         Additional parameter options that can be passed
     """
 
-    _raise_error_if_not_sframe(dataset, "training dataset")
+    # Perform error-checking and trim inputs to specified columns
+    dataset, validation_set = _validate_data(dataset, target, features,
+                                             validation_set)
 
-    # Create a validation set
+    # Sample a validation set from the training data if requested
     if isinstance(validation_set, str):
-        if validation_set == 'auto':
-            if dataset.num_rows() >= 100:
-                if verbose:
-                    print_validation_track_notification()
-                dataset, validation_set = dataset.random_split(.95, seed=seed)
-            else:
-                validation_set = None
+        assert validation_set == 'auto'
+        if dataset.num_rows() >= 100:
+            if verbose:
+                print_validation_track_notification()
+            dataset, validation_set = dataset.random_split(.95, seed=seed, exact=True)
         else:
-            raise TypeError('Unrecognized value for validation_set.')
+            validation_set = _turicreate.SFrame()
+    elif validation_set is None:
+        validation_set = _turicreate.SFrame()
 
-    # Target
-    target_sframe = _toolkits_select_columns(dataset, [target])
+    # Sanitize model-specific options
+    options = {k.lower(): kwargs[k] for k in kwargs}
 
-    # Features
-    if features is None:
-        features = dataset.column_names()
-        features.remove(target)
-    if not hasattr(features, '__iter__'):
-        raise TypeError("Input 'features' must be a list.")
-    if not all([isinstance(x, str) for x in features]):
-        raise TypeError("Invalid feature %s: Feature names must be of type str" % x)
-    features_sframe = _toolkits_select_columns(dataset, features)
+    # Create a model instance and train it
+    model = _turicreate.extensions.__dict__[model_name]()
+    with QuietProgress(verbose):
+        model.train(dataset, target, validation_set, options)
 
-
-    options = {}
-    _kwargs = {}
-    for k in kwargs:
-      _kwargs[k.lower()] = kwargs[k]
-    options.update(_kwargs)
-    options.update({'target': target_sframe,
-                    'features': features_sframe,
-                    'model_name': model_name})
-
-    if validation_set is not None:
-
-        if not isinstance(validation_set, _turicreate.SFrame):
-            raise TypeError("validation_set must be either 'auto' or an SFrame matching the training data.")
-
-        # Attempt to append the two datasets together to check schema
-        validation_set.head().append(dataset.head())
-
-        options.update({
-            'features_validation' : _toolkits_select_columns(validation_set, features),
-            'target_validation' : _toolkits_select_columns(validation_set, [target])})
-
-
-    ret = _turicreate.toolkits._main.run("supervised_learning_train",
-                                       options, verbose)
-    model = SupervisedLearningModel(ret['model'], model_name)
-
-    return model
-
-
-def create_regression_with_model_selector(dataset, target, model_selector,
-    features = None, validation_set='auto', verbose = True):
-    """
-    Create a :class:`~turicreate.toolkits.SupervisedLearningModel`,
-
-    This is generic function that allows you to create any model that
-    implements SupervisedLearningModel This function is normally not called, call
-    specific model's create function instead
-
-    Parameters
-    ----------
-    dataset : SFrame
-        Dataset for training the model.
-
-    target : string
-        Name of the column containing the target variable. The values in this
-        column must be 0 or 1, of integer type.
-
-    model_name : string
-        Name of the model
-
-    model_selector: function
-        Provide a model selector.
-
-    features : list[string], optional
-        List of feature names used by feature column
-
-    verbose : boolean
-        whether print out messages during training
-
-    """
-
-    # Error checking
-    _raise_error_if_not_sframe(dataset, "training dataset")
-    if features is None:
-        features = dataset.column_names()
-        if target in features:
-            features.remove(target)
-    if not hasattr(features, '__iter__'):
-        raise TypeError("Input 'features' must be a list.")
-    if not all([isinstance(x, str) for x in features]):
-        raise TypeError("Invalid feature %s: Feature names must be of type str" % x)
-
-    # Sample the data
-    features_sframe = _toolkits_select_columns(dataset, features)
-    if features_sframe.num_rows() > 1e5:
-        fraction = 1.0 * 1e5 / features_sframe.num_rows()
-        features_sframe = features_sframe.sample(fraction, seed = 0)
-
-    # Run the model selector.
-    selected_model_name = model_selector(features_sframe)
-    model = create_selected(selected_model_name, dataset, target, features, validation_set, verbose)
-
-    return model
+    return SupervisedLearningModel(model, model_name)
 
 
 def create_classification_with_model_selector(dataset, target, model_selector,
@@ -489,19 +366,12 @@ def create_classification_with_model_selector(dataset, target, model_selector,
 
     """
 
-    # Error checking
-    _raise_error_if_not_sframe(dataset, "training dataset")
-    if features is None:
-        features = dataset.column_names()
-        if target in features:
-            features.remove(target)
-    if not hasattr(features, '__iter__'):
-        raise TypeError("Input 'features' must be a list.")
-    if not all([isinstance(x, str) for x in features]):
-        raise TypeError("Invalid feature %s: Feature names must be of type str" % x)
+    # Perform error-checking and trim inputs to specified columns
+    dataset, validation_set = _validate_data(dataset, target, features,
+                                             validation_set)
 
     # Sample the data
-    features_sframe = _toolkits_select_columns(dataset, features)
+    features_sframe = dataset
     if features_sframe.num_rows() > 1e5:
         fraction = 1.0 * 1e5 / features_sframe.num_rows()
         features_sframe = features_sframe.sample(fraction, seed = 0)
@@ -516,7 +386,7 @@ def create_classification_with_model_selector(dataset, target, model_selector,
             if dataset.num_rows() >= 100:
                 if verbose:
                     print_validation_track_notification()
-                dataset, validation_set = dataset.random_split(.95)
+                dataset, validation_set = dataset.random_split(.95, exact=True)
             else:
                 validation_set = None
         else:
@@ -546,12 +416,14 @@ def create_classification_with_model_selector(dataset, target, model_selector,
 
         if 'validation_accuracy' in m._list_fields():
             metrics[model_name] = m.validation_accuracy
+        elif 'training_accuracy' in m._list_fields():
+            metrics[model_name] = m.training_accuracy
 
         # Most models have this.
         elif 'progress' in m._list_fields():
             prog = m.progress
-            validation_column = 'Validation-accuracy'
-            accuracy_column = 'Training-accuracy'
+            validation_column = 'Validation Accuracy'
+            accuracy_column = 'Training Accuracy'
             if validation_column in prog.column_names():
                 metrics[model_name] = float(prog[validation_column].tail(1)[0])
             else:
@@ -598,33 +470,38 @@ def create_selected(selected_model_name, dataset, target, features,
         validation_set=validation_set,
         verbose=verbose)
 
+    return wrap_model_proxy(model.__proxy__)
+
+def wrap_model_proxy(model_proxy):
+    selected_model_name = model_proxy.__class__.__name__
+
     # Return the model
     if selected_model_name == 'boosted_trees_regression':
         return _turicreate.boosted_trees_regression.BoostedTreesRegression(\
-            model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'random_forest_regression':
         return _turicreate.random_forest_regression.RandomForestRegression(\
-            model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'decision_tree_regression':
         return _turicreate.decision_tree_classifier.DecisionTreeRegression(\
-          model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'regression_linear_regression':
         return _turicreate.linear_regression.LinearRegression(\
-            model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'boosted_trees_classifier':
         return _turicreate.boosted_trees_classifier.BoostedTreesClassifier(\
-          model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'random_forest_classifier':
         return _turicreate.random_forest_classifier.RandomForestClassifier(\
-          model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'decision_tree_classifier':
         return _turicreate.decision_tree_classifier.DecisionTreeClassifier(\
-          model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'classifier_logistic_regression':
         return _turicreate.logistic_classifier.LogisticClassifier(\
-          model.__proxy__)
+            model_proxy)
     elif selected_model_name == 'classifier_svm':
-        return _turicreate.svm_classifier.SVMClassifier(model.__proxy__)
+        return _turicreate.svm_classifier.SVMClassifier(model_proxy)
     else:
         raise ToolkitError("Internal error: Incorrect model returned.")
 

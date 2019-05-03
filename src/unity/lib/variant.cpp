@@ -5,11 +5,12 @@
  */
 #include <unity/lib/variant.hpp>
 #include <flexible_type/flexible_type.hpp>
-#include <unity/lib/api/model_interface.hpp>
 #include <unity/lib/api/unity_sframe_interface.hpp>
 #include <unity/lib/api/unity_sarray_interface.hpp>
 #include <unity/lib/api/unity_graph_interface.hpp>
 #include <unity/lib/api/function_closure_info.hpp>
+#include <unity/lib/extensions/model_base.hpp>
+
 namespace turi {
 namespace archive_detail {
 
@@ -99,4 +100,4 @@ exec(iarchive& iarc, variant_type& v) {
 
 
 } // archive_detail
-} // turicreate
+} // turi

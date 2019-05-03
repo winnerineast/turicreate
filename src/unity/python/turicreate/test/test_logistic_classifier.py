@@ -8,8 +8,6 @@ from __future__ import division as _
 from __future__ import absolute_import as _
 import unittest
 import turicreate as tc
-import sys
-import operator as op
 import scipy.stats as ss
 import uuid
 import numpy as np
@@ -24,9 +22,6 @@ import os
 import copy
 import pandas as pd
 
-
-import os as _os
-_lfs = _os.environ['LFS_ROOT']
 
 #
 # Various test cases for the _LogisticRegressionClassifierModelTest
@@ -146,10 +141,21 @@ def binary_classification_integer_target(cls):
         'solver': lambda x: x == cls.opts['solver'],
         'step_size': lambda x: lambda x: x == cls.opts['step_size'],
         'target': lambda x: x == cls.target,
+        'training_accuracy': lambda x: x >= 0 and x <= 1,
         'training_iterations': lambda x: x > 0,
         'training_loss': lambda x: abs(x - cls.loss) < 1e-5,
         'training_solver_status': lambda x: x == "SUCCESS: Optimal solution found.",
         'training_time': lambda x: x >= 0,
+        'simple_mode': lambda x: not x,
+        'training_auc': lambda x: x > 0,
+        'training_confusion_matrix': lambda x: len(x) > 0,
+        'training_f1_score': lambda x: x > 0,
+        'training_log_loss': lambda x: x > 0,
+        'training_precision': lambda x: x > 0,
+        'training_recall': lambda x: x > 0,
+        'training_report_by_class': lambda x: len(x) > 0,
+        'training_roc_curve': lambda x: len(x) > 0,
+        'validation_data': lambda x: isinstance(x, tc.SFrame) and len(x) == 0,
         }
     cls.fields_ans = cls.get_ans.keys()
 
@@ -672,6 +678,15 @@ class LogisticRegressionCreateTest(unittest.TestCase):
             args = (self.sf, self.target, self.features, solver, kwargs,
                     False)
             self._test_create(*args)
+
+    def test_init_residual_of_zero(self):
+        X = tc.SFrame({'col1': [2., 1., 2., 1.], 'target': [1, 1, 2, 2]})
+
+        # Try all three solvers
+        tc.logistic_classifier.create(X, target = 'target', solver = 'newton')
+        tc.logistic_classifier.create(X, target = 'target', solver = 'lbfgs')
+        tc.logistic_classifier.create(X, target = 'target', solver = 'fista')
+
 
 class ListCategoricalLogisticRegressionTest(unittest.TestCase):
     """

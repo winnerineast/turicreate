@@ -43,6 +43,81 @@ void ml_metadata::set_training_index_sizes_to_current_column_sizes() {
   setup_cached_values();
 }
 
+/**
+   * Returns the feature name of a specific feature present in the metadata.
+   *
+   * Numeric columns are represented by the column name.
+   *
+   * Categorical / Categorical List / Dictionary columns are represented by
+   * "name[category]".
+   *
+   * Vectors are represented by "vector[index]", where index is numerical.
+   *
+   * \returns Names of features
+   */
+std::string ml_metadata::feature_name(size_t column_idx, size_t index) const {
+  const std::string& name = column_name(column_idx);
+
+  switch (column_mode(column_idx)) {
+    case ml_column_mode::NUMERIC:
+    case ml_column_mode::UNTRANSLATED:
+      DASSERT_EQ(index, 0);
+      return name;
+
+    case ml_column_mode::CATEGORICAL:
+    case ml_column_mode::DICTIONARY:
+    case ml_column_mode::CATEGORICAL_VECTOR:
+      return name + "[" +
+             (indexer(column_idx)
+                  ->map_index_to_value(index)
+                  .template to<std::string>()) +
+             "]";
+
+    case ml_column_mode::NUMERIC_VECTOR:
+      DASSERT_LT(index, column_size(column_idx));
+      return name + "[" + std::to_string(index) + "]";
+    default:
+      return name; 
+  }
+}
+
+/**
+ * Returns a list of all the feature names present in the metadata.
+ *
+ * Numeric columns are represented by the column name.
+ *
+ * Categorical / Categorical List / Dictionary columns are represented by
+ * "name[category]".
+ *
+ * Vectors are represented by "vector[index]", where index is numerical.
+ *
+ * ND vectors are represented by "nd_vector[idx1,idx2]" etc.
+ *
+ * If unpack_categorical_columns is false, then purely categorical columns (not
+ * lists or dictionaries) are called out only by their column name instead of
+ * their categories.
+ *
+ * \returns Names of features
+ */
+std::vector<std::string> ml_metadata::feature_names(bool unpack_categorical_columns) const {
+
+  std::vector<std::string> feature_names;
+  feature_names.reserve(num_dimensions());
+
+  for(size_t i = 0; i < num_columns(); ++i) {
+    if (column_mode(i) == ml_column_mode::CATEGORICAL &&
+        !unpack_categorical_columns) {
+      feature_names.push_back(column_name(i));
+    } else {
+      for (size_t j = 0; j < index_size(i); ++j) {
+        feature_names.push_back(feature_name(i, j));
+      }
+    }
+  }
+
+  return feature_names;
+}
+
 /** Some of the data statistics are cached.  This function computes
  *  these, making it possible to use nearly all the metadata functions
  *  in the inner loop of something with no concerns about speed.
@@ -156,7 +231,8 @@ void ml_metadata::load(turi::iarchive& iarc) {
  *  subsetted columns.
  */
 std::shared_ptr<ml_metadata> ml_metadata::select_columns(
-    const std::vector<std::string>& new_columns, bool include_target) const {
+    const std::vector<std::string>& new_columns, bool include_target,
+    const std::vector<std::string>& clr_columns) const {
 
   if(std::set<std::string>(new_columns.begin(), new_columns.end()).size() != new_columns.size()) {
     ASSERT_MSG(false, "Duplicates in the column selection not allowed.");
@@ -164,6 +240,10 @@ std::shared_ptr<ml_metadata> ml_metadata::select_columns(
 
   ////////////////////////////////////////////////////////////////////////////////
   // Step 1.  Deal with the columns.
+
+  // See which columns have to be cleared on copy.
+  std::set<std::string> clear_set(clr_columns.begin(), clr_columns.end()); 
+
 
   // Go through and copy over all the individual column_metadata pointers.
   auto m = std::make_shared<ml_metadata>();
@@ -185,7 +265,12 @@ std::shared_ptr<ml_metadata> ml_metadata::select_columns(
     if(column_idx == size_t(-1))
       ASSERT_MSG(false, (std::string("Column ") + new_columns[i] + " not found.").c_str());
 
-    m->columns[i] = columns[column_idx];
+    if(clear_set.count(c)) { 
+      m->columns[i] = columns[column_idx]->create_cleared_copy(); 
+      clear_set.erase(c);
+    } else { 
+       m->columns[i] = columns[column_idx];
+    }
   }
 
   ////////////////////////////////////////////////////////////////////////////////

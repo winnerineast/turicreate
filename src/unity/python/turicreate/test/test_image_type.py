@@ -14,8 +14,9 @@ import os
 from ..data_structures import image
 from .. import SArray
 from ..toolkits.image_analysis import image_analysis
+from ..toolkits._main import ToolkitError
 
-from ..deps import numpy as _np, HAS_NUMPY
+from .._deps import numpy as _np, HAS_NUMPY
 
 current_file_dir = os.path.dirname(os.path.realpath(__file__))
 
@@ -120,6 +121,17 @@ class ImageClassTest(unittest.TestCase):
                         pilimage = pilimage.convert('RGBA')
                     self.__check_raw_image_equals_pilimage(glimage_resized, pilimage)
 
+    def test_cmyk_not_supported(self):
+        for meta_info in test_image_info:
+            input_img = PIL_Image.open(meta_info.url)
+            input_img = input_img.convert('CMYK')
+
+            import tempfile 
+            with tempfile.NamedTemporaryFile() as t:
+                input_img.save(t, format='jpeg')
+                with self.assertRaises(ToolkitError):
+                    cmyk_image = image.Image(path=t.name, format='JPG')
+
     def test_batch_resize(self):
         image_url_dir = current_file_dir + '/images'
         sa = image_analysis.load_images(image_url_dir, "auto", with_path=False)['image']
@@ -135,7 +147,7 @@ class ImageClassTest(unittest.TestCase):
         # Test auto format, with path and recursive
         sf1 = image_analysis.load_images(image_url_dir, "auto", True, True)
         self.assertEqual(sf1.num_columns(), 2)
-        self.assertEqual(sf1.num_rows(), 4)
+        self.assertEqual(sf1.num_rows(), 18)
         self.assertEqual(sf1['image'].dtype, image.Image)
 
         # Test auto format, with path and non recursive
@@ -147,13 +159,18 @@ class ImageClassTest(unittest.TestCase):
         # Test auto format, without path and recursive
         sf3 = image_analysis.load_images(image_url_dir, "auto", False, True)
         self.assertEqual(sf3.num_columns(), 1)
-        self.assertEqual(sf3.num_rows(), 4)
+        self.assertEqual(sf3.num_rows(), 18)
         self.assertEqual(sf3['image'].dtype, image.Image)
 
         # Test auto format, without path and non recursive
         sf4 = image_analysis.load_images(image_url_dir, "auto", False, False)
         self.assertEqual(sf4.num_columns(), 1)
         self.assertEqual(sf4.num_rows(), 2)
+
+        # Confirm that load_images works with a single image as well
+        sf5 = image_analysis.load_images(image_url_dir + '/sample.jpg', "auto", False, False)
+        self.assertEqual(sf5.num_columns(), 1)
+        self.assertEqual(sf5.num_rows(), 1)
 
         # Expect error when trying to load PNG image as JPG
         with self.assertRaises(RuntimeError):
@@ -167,6 +184,24 @@ class ImageClassTest(unittest.TestCase):
         # to our best effort without throwing error
         image_analysis.load_images(image_url_dir, 'JPG', ignore_failure=True)
         image_analysis.load_images(image_url_dir, 'PNG', ignore_failure=True)
+
+    def test_astype_image(self):
+        import glob
+        imagelist = glob.glob(current_file_dir + '/images/*/**')
+        imageurls = SArray(imagelist)
+        images = imageurls.astype(image.Image)
+        self.assertEqual(images.dtype, image.Image)
+        # check that we actually loaded something.
+        for i in images:
+            self.assertGreater(i.height, 0)
+            self.assertGreater(i.width, 0)
+
+        # try a bad image
+        imageurls = SArray(["no_image_here", "go_away"])
+        self.assertRaises(Exception, lambda: imageurls.astype(image.Image))
+        ret = imageurls.astype(image.Image, undefined_on_failure=True)
+        self.assertEqual(ret[0], None)
+        self.assertEqual(ret[1], None)
 
     def test_casting(self):
         image_url_dir = current_file_dir + '/images/nested'
@@ -241,4 +276,43 @@ class ImageClassTest(unittest.TestCase):
         for p in range(len(pixel_data)):
             self.assertEqual(pixel_data[p], 50)
 
+        # Load images and make sure shape is right
+        img_color = image.Image(os.path.join(current_file_dir, 'images', 'sample.png'))
+        self.assertEqual(img_color.pixel_data.shape, (444, 800, 3))
 
+        img_gray = image.Image(os.path.join(current_file_dir, 'images', 'nested', 'sample_grey.png'))
+        self.assertEqual(img_gray.pixel_data.shape, (444, 800))
+
+    def test_png_bitdepth(self):
+        def path(name):
+            return os.path.join(current_file_dir, 'images', 'bitdepths', name)
+
+        # Test images with varying bitdepth and check correctness against 4 reference pixels
+        images_info = [
+            # path, bitdepth, pixel_data[0, 0], pixel_data[0, 1], pixel_data[0, 200], pixel_data[40, 400]
+            (path('color_1bit.png'),  [0, 0, 0], [0, 0, 0], [  0, 255, 255], [255, 255,   0]),
+            (path('color_2bit.png'),  [0, 0, 0], [0, 0, 0], [ 85, 255, 170], [170, 170,  85]),
+            (path('color_4bit.png'),  [0, 0, 0], [0, 0, 0], [ 68, 221, 187], [153, 187, 102]),
+            (path('color_8bit.png'),  [0, 0, 0], [0, 1, 2], [ 73, 219, 182], [146, 182, 109]),
+            (path('color_16bit.png'), [0, 0, 0], [0, 1, 2], [ 73, 219, 182], [146, 182, 109]),
+
+            (path('gray_1bit.png'),  0, 0,   0, 255),
+            (path('gray_2bit.png'),  0, 0,  85, 170),
+            (path('gray_4bit.png'),  0, 0,  68, 153),
+            (path('gray_8bit.png'),  0, 0,  73, 146),
+            (path('gray_16bit.png'), 0, 0,  73, 146),
+
+            (path('palette_1bit.png'), [127,   0, 255], [127,   0, 255], [127,   0, 255], [255,   0,   0]),
+            (path('palette_2bit.png'), [127,   0, 255], [127,   0, 255], [ 42, 220, 220], [212, 220, 127]),
+            (path('palette_4bit.png'), [127,   0, 255], [127,   0, 255], [  8, 189, 232], [178, 242, 149]),
+            (path('palette_8bit.png'), [127,   0, 255], [127,   0, 255], [ 18, 199, 229], [164, 248, 158]),
+        ]
+
+        for path, color_0_0, color_0_1, color_0_200, color_40_400 in images_info:
+            img = image.Image(path)
+            data = img.pixel_data
+            ref_type = type(color_0_0)
+            self.assertEqual(ref_type(data[0, 0]), color_0_0)
+            self.assertEqual(ref_type(data[0, 1]), color_0_1)
+            self.assertEqual(ref_type(data[0, 200]), color_0_200)
+            self.assertEqual(ref_type(data[40, 400]), color_40_400)

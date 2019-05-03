@@ -23,14 +23,14 @@ from __future__ import absolute_import as _
 
 import sys as _sys
 from . import SArray as _SArray, SFrame as _SFrame, SGraph as _SGraph
-from .connect.main import get_unity as _get_unity
+from ._connect.main import get_unity as _get_unity
 from .util import _make_internal_url
-from .cython.cy_sframe import UnitySFrameProxy as _UnitySFrameProxy
-from .cython.cy_sarray import UnitySArrayProxy as _UnitySArrayProxy
-from .cython.cy_graph import UnityGraphProxy as _UnityGraphProxy
-from .cython.cy_model import UnityModel as _UnityModel
+from ._cython.cy_sframe import UnitySFrameProxy as _UnitySFrameProxy
+from ._cython.cy_sarray import UnitySArrayProxy as _UnitySArrayProxy
+from ._cython.cy_graph import UnityGraphProxy as _UnityGraphProxy
+from ._cython.cy_model import UnityModel as _UnityModel
 from .toolkits._main import ToolkitError as _ToolkitError
-from .cython.context import debug_trace as cython_context
+from ._cython.context import debug_trace as cython_context
 from sys import version_info as _version_info
 import types as _types
 if _sys.version_info.major == 2:
@@ -76,7 +76,6 @@ else:
 # module, breaking the recursive relation. And the tc.extensions wrapper will
 # have all the stuff in it for tab completion by IPython.
 
-import sys as _sys
 _thismodule = _sys.modules[__name__]
 class_uid_to_class = {}
 
@@ -95,14 +94,11 @@ def _wrap_function_return(val):
         return _SArray(_proxy = val)
     elif type(val) is _UnityModel:
         # we need to cast it up to the appropriate type
-        try:
-            if '__uid__' in val.list_fields():
-                uid = val.get('__uid__')
-                if uid in class_uid_to_class:
-                    return class_uid_to_class[uid](_proxy=val)
-        except:
-            pass
-        return val
+        uid = val.get_uid()
+        if uid in class_uid_to_class:
+            return class_uid_to_class[uid](_proxy=val)
+        else:
+            return val
     elif type(val) is list:
         return [_wrap_function_return(i) for i in val]
     elif type(val) is dict:
@@ -198,9 +194,8 @@ def _create_class_instance(class_name, _proxy):
     Look for the class in .extensions in case it has already been
     imported (perhaps as a builtin extensions hard compiled into unity_server).
     """
-    root_package_name = __import__(__name__.split('.')[0]).__name__
     try:
-        return _class_instance_from_name(root_package_name + ".extensions." + class_name, _proxy=_proxy)
+        return _class_instance_from_name('turicreate.extensions.' + class_name, _proxy=_proxy)
     except:
         pass
     return _class_instance_from_name(class_name, _proxy=_proxy)
@@ -234,9 +229,9 @@ class _ToolkitClass:
             self.__dict__['_tkclass'] = _get_unity().create_toolkit_class(tkclass_name)
         try:
             # fill the functions and properties
-            self.__dict__['_functions'] = self._tkclass.get('list_functions')
-            self.__dict__['_get_properties'] = self._tkclass.get('list_get_properties')
-            self.__dict__['_set_properties'] = self._tkclass.get('list_set_properties')
+            self.__dict__['_functions'] = self._tkclass.list_functions()
+            self.__dict__['_get_properties'] = self._tkclass.list_get_properties()
+            self.__dict__['_set_properties'] = self._tkclass.list_set_properties()
             # rewrite the doc string for this class
             try:
                 self.__dict__['__doc__'] = self._tkclass.get('get_docstring', {'__symbol__':'__doc__'})
@@ -263,8 +258,6 @@ class _ToolkitClass:
         arguments = self._functions[fnname]
         num_args_got = len(args) + len(kwargs)
         num_args_required = len(arguments)
-        if num_args_got != num_args_required:
-            raise TypeError("Expecting " + str(num_args_required) + " arguments, got " + str(num_args_got))
 
         ## fill the dict first with the regular args
         argument_dict = {}
@@ -277,8 +270,11 @@ class _ToolkitClass:
                 raise TypeError("Got multiple values for keyword argument '" + k + "'")
             argument_dict[k] = kwargs[k]
         # unwrap it
-        argument_dict['__function_name__'] = fnname
-        ret = self._tkclass.get('call_function', argument_dict)
+        try:
+            ret = self._tkclass.call_function(fnname, argument_dict)
+        except RuntimeError as exc:
+            # Expose C++ exceptions using ToolkitError.
+            raise _ToolkitError(exc)
         ret = _wrap_function_return(ret)
         return ret
 
@@ -288,14 +284,13 @@ class _ToolkitClass:
             return self.__dict__['__proxy__']
         elif name in self._get_properties:
             # is it an attribute?
-            arguments = {'__property_name__':name}
-            return _wrap_function_return(self._tkclass.get('get_property', arguments))
+            return _wrap_function_return(self._tkclass.get_property(name))
         elif name in self._functions:
             # is it a function?
             ret = lambda *args, **kwargs: self.__run_class_function(name, args, kwargs)
             ret.__doc__ = "Name: " + name + "\nParameters: " + str(self._functions[name]) + "\n"
             try:
-                ret.__doc__ += self._tkclass.get('get_docstring', {'__symbol__':name})
+                ret.__doc__ += self._tkclass.get_docstring(name)
                 ret.__doc__ += '\n'
             except:
                 pass
@@ -309,8 +304,8 @@ class _ToolkitClass:
             self.__dict__['__proxy__'] = value
         elif name in self._set_properties:
             # is it a setable property?
-            arguments = {'__property_name__':name, 'value':value}
-            return _wrap_function_return(self._tkclass.get('set_property', arguments))
+            arguments = {'value':value}
+            return _wrap_function_return(self._tkclass.set_property(name, arguments))
         else:
             raise AttributeError("no attribute " + name)
 
@@ -586,7 +581,6 @@ def ext_import(soname, module_subpath=""):
         raise RuntimeError(ret)
     _publish()
     # push the functions into the corresponding module namespace
-    filename = os.path.basename(soname)
     return unity.list_toolkit_functions_in_dynamic_module(soname) + unity.list_toolkit_classes_in_dynamic_module(soname)
 
 

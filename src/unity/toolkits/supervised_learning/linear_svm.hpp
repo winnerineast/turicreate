@@ -11,7 +11,8 @@
 #include <unity/lib/gl_sframe.hpp>
 
 // Toolkits
-#include <toolkits/supervised_learning/supervised_learning.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning.hpp>
+#include <unity/toolkits/coreml_export/mlmodel_wrapper.hpp>
 
 // Optimization Interface
 #include <optimization/optimization_interface.hpp>
@@ -36,7 +37,7 @@ class EXPORT linear_svm: public supervised_learning_model_base {
 
   protected:
 
-  arma::vec  coefs;    /**< Primal sol */
+  Eigen::Matrix<double, Eigen::Dynamic,1>  coefs;    /**< Primal sol */
   std::shared_ptr<linear_svm_scaled_logistic_opt_interface>
                                           scaled_logistic_svm_interface;
   
@@ -46,17 +47,12 @@ class EXPORT linear_svm: public supervised_learning_model_base {
   /**
    * Destructor. Make sure bad things don't happen
    */
-  ~linear_svm();
-
-  /**
-   * Returns the name of the model.
-   */
-  std::string name();
+  virtual ~linear_svm();
   
   /**
    * Set the default evaluation metric during model evaluation..
    */
-  void set_default_evaluation_metric(){
+  void set_default_evaluation_metric() override {
     set_evaluation_metric({
         "accuracy", 
         "confusion_matrix",
@@ -69,7 +65,7 @@ class EXPORT linear_svm: public supervised_learning_model_base {
   /**
    * Set the default evaluation metric for progress tracking.
    */
-  void set_default_tracking_metric(){
+  void set_default_tracking_metric() override {
     set_tracking_metric({
         "accuracy", 
        }); 
@@ -83,40 +79,42 @@ class EXPORT linear_svm: public supervised_learning_model_base {
    *
    */
   void model_specific_init(const ml_data& data, 
-                           const ml_data& valid_data);
+                           const ml_data& valid_data) override;
+
+  bool is_classifier() const override { return true; }
 
   /**
    * Train a svm model.
    */
-  void train();
+  void train() override;
 
   /**
    * Init the options.
    *
    * \param[in] opts Options to set
    */
-  void init_options(const std::map<std::string,flexible_type>& _opts);
+  void init_options(const std::map<std::string,flexible_type>& _opts) override;
 
 
   /**
    * Gets the model version number
    */
-  size_t get_version() const;
+  size_t get_version() const override;
 
   /**
    * Setter for model coefficieints.
    */
-  void set_coefs(const DenseVector& _coefs);
+  void set_coefs(const DenseVector& _coefs) override;
 
   /**
    * Serialize the object.
    */
-  void save_impl(turi::oarchive& oarc) const;
+  void save_impl(turi::oarchive& oarc) const override;
 
   /**
    * Load the object
    */
-  void load_version(turi::iarchive& iarc, size_t version);
+  void load_version(turi::iarchive& iarc, size_t version) override;
 
 
   /**
@@ -128,8 +126,9 @@ class EXPORT linear_svm: public supervised_learning_model_base {
    * \returns Prediction for a single example.
    *
    */
-  flexible_type predict_single_example(const DenseVector& x, 
-          const prediction_type_enum& output_type=prediction_type_enum::NA);
+  flexible_type predict_single_example(
+    const DenseVector& x,
+    const prediction_type_enum& output_type=prediction_type_enum::NA) override;
   
   /**
    * Predict for a single example. 
@@ -140,8 +139,9 @@ class EXPORT linear_svm: public supervised_learning_model_base {
    * \returns Prediction for a single example.
    *
    */
-  flexible_type predict_single_example(const SparseVector& x, 
-          const prediction_type_enum& output_type=prediction_type_enum::NA);
+  flexible_type predict_single_example(
+    const SparseVector& x,
+    const prediction_type_enum& output_type=prediction_type_enum::NA) override;
 
   /**
    * Make classification using a trained supervised_learning model.
@@ -153,7 +153,7 @@ class EXPORT linear_svm: public supervised_learning_model_base {
    * \note Already assumes that data is of the right shape.
    */
   sframe classify(const ml_data& test_data, 
-                  const std::string& output_type="");
+                  const std::string& output_type="") override;
 
   /**
    * Fast path predictions given a row of flexible_types
@@ -172,11 +172,14 @@ class EXPORT linear_svm: public supervised_learning_model_base {
     _coefs.resize(coefs.size());
     _coefs = coefs;
   }
+  
+  std::shared_ptr<coreml::MLModelWrapper> export_to_coreml() override;
 
-
+  BEGIN_CLASS_MEMBER_REGISTRATION("classifier_svm");
+  IMPORT_BASE_CLASS_REGISTRATION(supervised_learning_model_base);
+  END_CLASS_MEMBER_REGISTRATION
+ 
 };
-
-
 
 } // supervised
 } // turicreate

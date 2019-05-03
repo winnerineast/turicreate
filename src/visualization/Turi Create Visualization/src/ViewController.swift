@@ -5,16 +5,22 @@
 
 import WebKit
 
-class ViewController: NSViewController, NSWindowDelegate {
-    
-    @IBOutlet weak var webView: WKWebView!
+class ViewController: NSViewController, NSWindowDelegate, WKUIDelegate {
+    var customWebView: CustomWebKitView!
     
     // load view
+    override func loadView() {
+        let webConfiguration = WKWebViewConfiguration()
+        customWebView = CustomWebKitView(frame: .zero, configuration: webConfiguration)
+        customWebView.uiDelegate = self
+        view = customWebView
+    }
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         
         // create graph object
-        SharedData.shared.vegaContainer = VegaContainer(view: webView)
+        SharedData.shared.vegaContainer = VegaContainer(view: customWebView)
     }
     
     override func viewDidAppear() {
@@ -22,8 +28,8 @@ class ViewController: NSViewController, NSWindowDelegate {
         self.view.layer?.backgroundColor = NSColor.white.cgColor
     }
     
-    func windowShouldClose(_ sender: Any) -> Bool {
-        NSApplication.shared().terminate(self)
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApplication.shared.terminate(self)
         return true
     }
 

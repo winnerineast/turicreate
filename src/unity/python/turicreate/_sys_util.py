@@ -9,13 +9,10 @@ from __future__ import absolute_import as _
 import sys
 import os
 import logging
-from distutils.util import get_platform as _get_platform
 import ctypes
 import glob as _glob
 import subprocess as _subprocess
 from ._scripts import _pylambda_worker
-from copy import copy
-from .util import sys_info as _sys_info
 
 if sys.version_info.major == 2:
     import ConfigParser as _ConfigParser
@@ -66,7 +63,13 @@ def make_unity_server_env():
 
     # Set mxnet envvars
     if 'MXNET_CPU_WORKER_NTHREADS' not in env:
-        num_workers = min(2, int(env.get('OMP_NUM_THREADS', _sys_info.NUM_CPUS)))
+        from multiprocessing import cpu_count
+        num_cpus = int(env.get('OMP_NUM_THREADS', cpu_count()))
+        if sys.platform == 'darwin':
+            num_workers = num_cpus
+        else:
+            # On Linux, BLAS doesn't seem to tolerate larger numbers of workers.
+            num_workers = min(2, num_cpus)
         env['MXNET_CPU_WORKER_NTHREADS'] = str(num_workers)
 
     ## set local to be c standard so that unity_server will run ##
@@ -132,11 +135,7 @@ def test_pylambda_worker():
     process in order to print out additional diagnostic information
     in case there is an error.
     """
-
     import os
-
-    environment = os.environ.copy()
-    
     from os.path import join
     from os.path import exists
     import tempfile

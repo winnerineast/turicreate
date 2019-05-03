@@ -7,8 +7,8 @@
 #define TURI_KMEANS
 
 // Types
-#include <numerics/armadillo.hpp>
-#include <numerics/armadillo.hpp>
+#include <Eigen/Core>
+#include <Eigen/SparseCore>
 #include <sframe/sframe.hpp>
 #include <unity/lib/gl_sarray.hpp>
 #include <parallel/atomic.hpp>
@@ -23,11 +23,11 @@
 #include <unity/toolkits/ml_data_2/ml_data_iterators.hpp>
 
 // Interfaces
-#include <unity/toolkits/ml_model/ml_model.hpp>
-#include <unity/toolkits/options/option_manager.hpp>
+#include <unity/lib/extensions/ml_model.hpp>
+#include <unity/lib/extensions/option_manager.hpp>
 #include <unity/lib/variant_deep_serialize.hpp>
 #include <globals/globals.hpp>
-#include <toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
 
 // Miscellaneous
 #include <unity/lib/toolkit_util.hpp>
@@ -40,8 +40,8 @@ namespace turi {
 namespace kmeans {
 
 
-typedef arma::vec  dense_vector;
-typedef sparse_vector<double>  sparse_vector;
+typedef Eigen::Matrix<double, Eigen::Dynamic, 1>  dense_vector;
+typedef Eigen::SparseVector<double>  sparse_vector;
 
 
 /**
@@ -81,7 +81,7 @@ struct cluster {
 
   // Methods
   cluster(size_t dimension): center(dense_vector(dimension)), count(0) {
-    center.zeros();
+    center.setZero();
   };
 
   cluster() = delete;
@@ -323,7 +323,7 @@ public:
    * Set the model options. The option manager should throw errors if the
    * options do not satisfy the option manager's conditions.
    */
-  void init_options(const std::map<std::string, flexible_type>& _opts);
+  void init_options(const std::map<std::string, flexible_type>& _opts) override;
 
   /**
    * Train the kmeans model, without row labels.
@@ -399,29 +399,25 @@ public:
    * 1.5            3
    * 1.9            4
    */
-  inline size_t get_version() const { return KMEANS_VERSION; }
+  inline size_t get_version() const override { return KMEANS_VERSION; }
 
   /**
    * Serialize the model.
    */
-  void save_impl(turi::oarchive& oarc) const;
+  void save_impl(turi::oarchive& oarc) const override;
 
   /**
    * De-serialize the model.
    */
-  void load_version(turi::iarchive& iarc, size_t version);
+  void load_version(turi::iarchive& iarc, size_t version) override;
 
-  /**
-   * Clone model.
-   */
-  ml_model_base* ml_model_base_clone();
-
-  /**
-   * Return the name of the model.
-   */
-  std::string name();
+  // TODO: convert interface above to use the extensions methods here
+  BEGIN_CLASS_MEMBER_REGISTRATION("kmeans")
+  REGISTER_CLASS_MEMBER_FUNCTION(kmeans_model::list_fields)
+  END_CLASS_MEMBER_REGISTRATION
 
 };  // kmeans_model class
+
 
 
 } // namespace kmeans

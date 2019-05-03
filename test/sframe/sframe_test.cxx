@@ -1516,7 +1516,9 @@ struct sframe_test  {
        parallel_vals.push_back(val->new_instance());
      }
      for (size_t i = 0;i < 4; ++i) {
-       TS_ASSERT(typeid(*parallel_vals[i]) == typeid(*val));
+       auto parallel_vals_i_raw = parallel_vals[i];
+       auto val_raw = val.get();
+       TS_ASSERT(typeid(*parallel_vals_i_raw) == typeid(*val_raw));
      }
      // perform the partial aggregation
      for (size_t i = 0; i < vals.size(); ++i) {
@@ -1636,6 +1638,30 @@ struct sframe_test  {
        TS_ASSERT_EQUALS(result[i][2], std::to_string(i % 6));
      }
    }
+   void test_sarray_recursive_append(void) {
+     std::vector<flexible_type> int_col{0};
+     std::vector<flexible_type> float_col{0};
+     std::vector<flexible_type> str_col{"0"};
+     dataframe_t df;
+     df.set_column("int_col", int_col, flex_type_enum::INTEGER);
+     df.set_column("float_col", float_col, flex_type_enum::FLOAT);
+     df.set_column("str_col", str_col, flex_type_enum::STRING);
+     sframe sf(df);
+
+     for (size_t i = 0;i < 20; ++i) {
+       sf = sf.append(sf);
+     }
+     TS_ASSERT_EQUALS(sf.size(), 1048576);
+     auto reader = sf.get_reader();
+     sframe_rows rows;
+     reader->read_rows(0, 1048576, rows);
+     TS_ASSERT_EQUALS(rows.num_rows(), 1048576);
+     for (auto& row: rows) {
+       TS_ASSERT_EQUALS(row[0], int_col[0]);
+       TS_ASSERT_EQUALS(row[1], float_col[0]);
+       TS_ASSERT_EQUALS(row[2], str_col[0]);
+     }
+   }
 
    void test_sframe_rows() {
      std::vector<std::vector<flexible_type> > data{{1,2,3,4,5},
@@ -1651,6 +1677,54 @@ struct sframe_test  {
      for (auto& row: rows) {
        TS_ASSERT_EQUALS(row[0], data[0][i]);
        ++i;
+     }
+   }
+   void test_sframe_ndarray() {
+     flex_nd_vec fortran({0,5,1,6,2,7,3,8,4,9},
+                          {2,5},
+                          {1,2});
+     flex_nd_vec c({0,1,2,3,4,5,6,7,8,9},
+                          {2,5},
+                          {5,1});
+     flex_nd_vec subarray({0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16},
+                          {2,2},
+                          {1,4}); // top left corner of array
+     flex_nd_vec subarray2({0,1,2,3,
+                            4,5,6,7,
+                            8,9,10,11,
+                            12,13,14,15,16},
+                          {2,2},
+                          {1,4},
+                          2); // top right corner of array
+     flex_nd_vec zero_stride({0,1,2,3,4,5,6,7,8,9},
+                             {2,5},
+                             {1,0});
+     flex_nd_vec d4({0,2,4,1,3,5},
+                     {3,1,1,2},
+                     {1,0,0,3}); 
+
+     std::vector<flexible_type> values{fortran,c,subarray,subarray2,zero_stride,d4};
+     std::string fname = get_temp_name() + ".sidx";
+
+     sarray<flexible_type> sa;
+     sa.open_for_write(fname, 1);
+     sa.set_type(flex_type_enum::ND_VECTOR);
+     auto iter = sa.get_output_iterator(0);
+     std::copy(values.begin(), values.end(), iter);
+     sa.close();
+
+     TS_ASSERT_EQUALS(sa.size(), values.size());
+     // now check for reversibility by reading it back
+     for(auto& v: values) {
+       v.mutable_get<flex_nd_vec>() = v.get<flex_nd_vec>().compact();
+     }
+     sframe_rows rows;
+     sa.get_reader()->read_rows(0, sa.size(), rows);
+
+     auto values_iter = values.begin();
+     for (const auto& ret: rows) {
+       TS_ASSERT_EQUALS(ret[0] == *values_iter, true);
+       ++values_iter;
      }
    }
 };
@@ -1718,5 +1792,8 @@ BOOST_AUTO_TEST_CASE(test_sframe_append) {
 }
 BOOST_AUTO_TEST_CASE(test_sframe_rows) {
   sframe_test::test_sframe_rows();
+}
+BOOST_AUTO_TEST_CASE(test_sframe_ndarray) {
+  sframe_test::test_sframe_ndarray();
 }
 BOOST_AUTO_TEST_SUITE_END()

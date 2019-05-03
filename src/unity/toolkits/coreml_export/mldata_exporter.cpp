@@ -35,11 +35,29 @@ void setup_pipeline_from_mldata(
       case ml_column_mode::NUMERIC_VECTOR:
         {
           size_t dimension = metadata->index_size(column_idx);
-          pipeline.addInput(column_name, CoreML::FeatureType::Array({dimension}));
-          vect.addInput(column_name, CoreML::FeatureType::Array({dimension}));
+          pipeline.addInput(column_name, CoreML::FeatureType::Array({static_cast<int64_t>(dimension)}));
+          vect.addInput(column_name, CoreML::FeatureType::Array({static_cast<int64_t>(dimension)}));
           vect.add(column_name, dimension);
           break;
         }
+
+      case ml_column_mode::NUMERIC_ND_VECTOR:
+        {
+          auto shape = metadata->nd_column_shape(column_idx);
+
+#ifndef NDEBUG
+          size_t s = 1;
+          for(size_t e : shape) {
+            s *= e;
+          }
+          DASSERT_EQ(s,  metadata->index_size(column_idx));
+#endif
+          pipeline.addInput(column_name, CoreML::FeatureType::Array(std::vector<int64_t>(shape.begin(), shape.end())));
+          vect.addInput(column_name, CoreML::FeatureType::Array(std::vector<int64_t>(shape.begin(), shape.end())));
+          vect.add(column_name, metadata->index_size(column_idx));
+          break;
+        }
+
 
       case ml_column_mode::CATEGORICAL:
       case ml_column_mode::CATEGORICAL_SORTED:
@@ -188,7 +206,7 @@ void setup_pipeline_from_mldata(
 
   // Set the output of the vectorizer.
   vect.addOutput("__vectorized_features__",
-                 CoreML::FeatureType::Array({metadata->num_dimensions()}));
+                 CoreML::FeatureType::Array({static_cast<int64_t>(metadata->num_dimensions())}));
 
   // Add the vectorizer to the pipeline.
   pipeline.add(vect);

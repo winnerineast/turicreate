@@ -17,15 +17,23 @@ from __future__ import absolute_import as _
 
 import array
 import datetime
+import hypothesis
 import json # Python built-in JSON module
 import math
 import os
+import pandas
 import pytz
+import six
+import string
 import sys
 import unittest
+import tempfile
 
 from . import util
 from .. import _json # turicreate._json
+from ..data_structures.sarray import SArray
+from ..data_structures.sframe import SFrame
+from ..data_structures.sgraph import SGraph, Vertex, Edge
 
 if sys.version_info.major == 3:
     long = int
@@ -54,15 +62,62 @@ image_info = [image_info(u) for u in image_urls]
 _SFrameComparer = util.SFrameComparer()
 
 class JSONTest(unittest.TestCase):
+    # Only generate lists of dicts, but allow nearly-arbitrary JSON inside those.
+    # However, limit to length 1 to make sure the keys are the same in all rows.
+
+    # Known bug #1: escaped chars give different behavior in SFrame JSON parsing
+    # vs Python's built-in JSON module. Not sure which is correct:
+    """
+    Original JSON:  [{"": [{"\f": 0}]}]
+    Expected:  +---------------+
+    |       X1      |
+    +---------------+
+    | [{'\x0c': 0}] |
+    +---------------+
+    [1 rows x 1 columns]
+
+    Actual:  +--------------+
+    |      X1      |
+    +--------------+
+    | [{'\\f': 0}] |
+    +--------------+
+    [1 rows x 1 columns]
+    """
+    # In the meantime, let's use `string.ascii_letters + string.digits` instead of
+    # `string.printable` (which contains the problematic characters).
+    hypothesis_json = hypothesis.strategies.lists(
+        hypothesis.strategies.dictionaries(
+            keys=hypothesis.strategies.text(string.ascii_letters + string.digits),
+            values=hypothesis.strategies.recursive(
+                # Known bug #2: [{"": null}] parses as "null" in SFrame, and should be None
+                # Once this is fixed, uncomment the line below.
+                #hypothesis.strategies.none() |
+                # Known bug #3: [{"": false}] parses as "false" in SFrame, and should be 0
+                # Once this is fixed, uncomment the line below.
+                #hypothesis.strategies.booleans() |
+                hypothesis.strategies.integers(min_value=-(2**53)+1, max_value=(2**53)-1) |
+                hypothesis.strategies.floats() |
+                hypothesis.strategies.text(string.ascii_letters + string.digits),
+                lambda children: hypothesis.strategies.lists(children, 1) |
+                hypothesis.strategies.dictionaries(
+                    hypothesis.strategies.text(string.ascii_letters + string.digits), children, min_size=1)),
+            min_size=1,
+            max_size=1
+        ),
+        min_size=1,
+        max_size=1
+    )
+
     def _assertEqual(self, x, y):
-        from ..data_structures.sarray import SArray
-        from ..data_structures.sframe import SFrame
-        from ..data_structures.sgraph import SGraph
         if type(x) in [long,int]:
             self.assertTrue(type(y) in [long,int])
+        elif isinstance(x, six.string_types):
+            self.assertTrue(isinstance(y, six.string_types))
         else:
             self.assertEqual(type(x), type(y))
-        if isinstance(x, SArray):
+        if isinstance(x, six.string_types):
+            self.assertEqual(str(x), str(y))
+        elif isinstance(x, SArray):
             _SFrameComparer._assert_sarray_equal(x, y)
         elif isinstance(x, SFrame):
             _SFrameComparer._assert_sframe_equal(x, y)
@@ -180,9 +235,8 @@ class JSONTest(unittest.TestCase):
         ]]
 
     def test_sarray_to_json(self):
-        from ..data_structures.sarray import SArray
-        from ..data_structures.sframe import SFrame
         from .. import Image
+
         d = datetime.datetime(year=2016, month=3, day=5)
         [self._run_test_case(value) for value in [
             SArray(),
@@ -216,16 +270,12 @@ class JSONTest(unittest.TestCase):
         ]]
 
     def test_sframe_to_json(self):
-        from ..data_structures.sframe import SFrame
         [self._run_test_case(value) for value in [
             SFrame(),
             SFrame({'foo': [1,2,3,4], 'bar': [None, "Hello", None, "World"]}),
         ]]
 
     def test_sgraph_to_json(self):
-        from ..data_structures.sframe import SFrame
-        from ..data_structures.sgraph import SGraph, Vertex, Edge
-
         sg = SGraph()
         self._run_test_case(sg)
 
@@ -248,11 +298,133 @@ class JSONTest(unittest.TestCase):
     def test_variant_to_json(self):
         # not tested in the cases above: variant_type other than SFrame-like
         # but containing SFrame-like (so cannot be a flexible_type)
-        from ..data_structures.sarray import SArray
-        from ..data_structures.sframe import SFrame
         sf = SFrame({'col1': [1,2], 'col2': ['hello','world']})
         sa = SArray([5.0,6.0,7.0])
         [self._run_test_case(value) for value in [
             {'foo': sf, 'bar': sa},
             [sf, sa],
         ]]
+
+    def test_malformed_json(self):
+        out = """
+[
+  {
+  "text": "["I", "have", "an", "atlas"]",
+  "label": ["NONE", "NONE", "NONE", "NONE"]
+  },
+  {
+  "text": ["These", "are", "my", "dogs"],
+  "label": ["NONE", "NONE", "NONE", "PLN"]
+  },
+  {
+  "text": ["The", "sheep", "are", "fluffy"],
+  "label": ["NONE","PLN","NONE","NONE"]
+  },
+  {
+  "text": ["Billiards", "is", "my", "favourite", "game"],
+  "label": ["NONE", "NONE", "NONE", "NONE", "NONE"]
+  },
+  {
+  "text": ["I", "went", "to", "five", "sessions", "today"],
+  "label": ["NONE", "NONE", "NONE", "NONE", "PLN", "NONE"]
+  }
+ ]
+ """
+        with tempfile.NamedTemporaryFile('w') as f:
+            f.write(out)
+            f.flush()
+
+            self.assertRaises(RuntimeError, SArray.read_json, f.name)
+            self.assertRaises(RuntimeError, SFrame.read_json, f.name)
+
+    def test_nonexistant_json(self):
+        self.assertRaises(IOError, SArray.read_json, '/nonexistant.json')
+        self.assertRaises(IOError, SFrame.read_json, '/nonexistant.json')
+
+    def test_strange_128_char_corner_case(self):
+        json_text = """
+{"foo":[{"bar":"Lorem ipsum dolor sit amet, consectetur adipiscing elit. In eget odio velit. Suspendisse potenti. Vivamus a urna feugiat nullam."}]}
+"""
+        with tempfile.NamedTemporaryFile('w') as f:
+            f.write(json_text)
+            f.flush()
+
+            df = pandas.read_json(f.name, lines=True)
+            sf_actual = SFrame.read_json(f.name, orient='lines')
+            sf_expected = SFrame(df)
+            _SFrameComparer._assert_sframe_equal(sf_expected, sf_actual)
+
+    # deterministic across runs, and may take a while
+    @hypothesis.settings(derandomize=True, suppress_health_check=[hypothesis.HealthCheck.too_slow])
+    @hypothesis.given(hypothesis_json)
+    def test_arbitrary_json(self, json_obj):
+        # Known bug #1: escaped chars give different behavior in SFrame JSON parsing
+        # vs Python's built-in JSON module. Not sure which is correct.
+        # Workaround captured in definition of `hypothesis_json`
+
+        # Known bug #2: [{"": null}] parses as "null" in SFrame, and should be None
+        # Workaround captured in definition of `hypothesis_json`
+
+        # Known bug #3: [{"": false}] parses as "false" in SFrame, and should be 0
+        # Workaround captured in definition of `hypothesis_json`
+
+        try:
+            json_text = json.dumps(json_obj, allow_nan=False)
+        except:
+            # not actually valid JSON - skip this example
+            return
+
+        try:
+            expected = SFrame(json_obj).unpack('X1', column_name_prefix='')
+        except TypeError:
+            # something like TypeError: A common type cannot be infered from types integer, string.
+            # TC enforces all list items have the same type, which
+            # JSON does not necessarily enforce. Let's skip those examples.
+            return
+        with tempfile.NamedTemporaryFile('w') as f:
+            f.write(json_text)
+            f.flush()
+
+            try:
+                actual = SFrame.read_json(f.name)
+            except TypeError:
+                # something like TypeError: A common type cannot be infered from types integer, string.
+                # TC enforces all list items have the same type, which
+                # JSON does not necessarily enforce. Let's skip those examples.
+                return
+
+            _SFrameComparer._assert_sframe_equal(expected, actual)
+
+
+    def test_true_false_substitutions(self):
+        expecteda = [["a", "b", "c"],["a", "b", "c"]]
+        expectedb = [["d", "false", "e", 0, "true", 1, "a"],["d", "e", "f"]]
+
+        records_json_file = """
+[{"a" : ["a", "b", "c"],
+  "b" : ["d", "false", "e", false, "true", true, "a"]},
+ {"a" : ["a", "b", "c"],
+  "b" : ["d", "e", "f"]}]
+"""
+        lines_json_file = """
+{"a" : ["a", "b", "c"], "b" : ["d", "false", "e", false, "true", true, "a"]}
+{"a" : ["a", "b", "c"], "b" : ["d", "e", "f"]}
+"""
+
+
+        with tempfile.NamedTemporaryFile('w') as f:
+            f.write(records_json_file)
+            f.flush()
+            records = SFrame.read_json(f.name, orient='records')
+        self.assertEqual(list(records["a"]), expecteda)
+        self.assertEqual(list(records["b"]), expectedb)
+
+        with tempfile.NamedTemporaryFile('w') as f:
+            f.write(lines_json_file)
+            f.flush()
+            lines = SFrame.read_json(f.name, orient='lines')
+
+        self.assertEqual(list(lines["a"]), expecteda)
+        self.assertEqual(list(lines["b"]), expectedb)
+
+

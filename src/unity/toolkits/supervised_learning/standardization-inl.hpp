@@ -10,8 +10,8 @@
 #include <flexible_type/flexible_type.hpp>
 
 // Eigen
-#include <numerics/armadillo.hpp>
-#include <numerics/armadillo.hpp>
+#include <Eigen/Core>
+#include <Eigen/SparseCore>
 
 // Optimizaiton
 #include <optimization/optimization_interface.hpp>
@@ -19,8 +19,6 @@
 // ML-Data
 #include <ml_data/ml_data.hpp>
 #include <ml_data/metadata.hpp>
-#include <serialization/serialization_includes.hpp>
-
 
 // TODO: List of todo's for this file
 //------------------------------------------------------------------------------
@@ -79,7 +77,7 @@ namespace supervised {
  * the column to:
  *                  x' = (x - mean) / stdev
  *
- * PROS: Statistically well .
+ * PROS: Statistically well documented.
  * CONS: Sparsity breaking
  *
  * 3) Min-Max: Given a column of data x, the norm re-scaling changes
@@ -105,12 +103,12 @@ class standardization_interface {
   /**
    * Default destructor.
    */
-  ~standardization_interface() {}
+  virtual ~standardization_interface() = default;
 
   /**
   * Default constructor.
   */
-  standardization_interface(){}
+  standardization_interface() = default;
 
   // Dense Vectors
   // --------------------------------------------------------------------------
@@ -215,7 +213,7 @@ class l2_rescaling: public standardization_interface {
   /**
    * Default destructor.
    */
-  ~l2_rescaling() {};
+  virtual ~l2_rescaling() {}
 
   /**
    * Default constructor.
@@ -242,7 +240,7 @@ class l2_rescaling: public standardization_interface {
    */
   l2_rescaling(
       const std::shared_ptr<ml_metadata> & ml_mdata,
-      bool _use_reference = true){
+      bool _use_reference = true) {
 
     // Make sure the size is set
     use_reference = _use_reference;
@@ -257,12 +255,13 @@ class l2_rescaling: public standardization_interface {
 
     // Init the scale
     scale.resize(total_size);
-    scale.zeros();
+    scale.setZero();
     size_t idx = 0;
 
-    for(size_t i = 0; i < ml_mdata->num_columns(); i++){
+    for(size_t i = 0; i < ml_mdata->num_columns(); i++) {
 
       const auto& stats = ml_mdata->statistics(i);
+      bool skip_first = (use_reference && ml_mdata->is_categorical(i));
 
       // For each column in the metadata
       // \note: Computing the L2 norm (averaged over example)
@@ -273,64 +272,12 @@ class l2_rescaling: public standardization_interface {
       // The stdev is the L2 norm of the data shifted by the mean. This undoes
       // this shift. There could be an multiplication by an "N" to get the
       // L2 norm but that multiple doesn't quite help.
-      switch(ml_mdata->column_mode(i)) {
 
-        // Numeric
-        case ml_column_mode::NUMERIC: {
-          scale(idx) = stats->mean(0) * stats->mean(0) +
-                             stats->stdev(0) * stats->stdev(0);
-          idx += 1;
-          break;
-        }
-
-        // Categorical
-        case ml_column_mode::CATEGORICAL: {
-          for (size_t c = 0; c < ml_mdata->index_size(i); c++){
-            if(c >= use_reference){
-              scale(idx) = stats->mean(c) * stats->mean(c) +
-                             stats->stdev(c) * stats->stdev(c);
-              idx++;
-            }
-          }
-          break;
-        }
-
-        // Numeric vector
-        case ml_column_mode::NUMERIC_VECTOR: {
-          for (size_t c = 0; c < ml_mdata->index_size(i); c++){
-            scale(idx) = stats->mean(c) * stats->mean(c) +
-                             stats->stdev(c) * stats->stdev(c);
-            ++idx;
-          }
-          break;
-        }
-
-        // Categorical vector
-        case ml_column_mode::CATEGORICAL_VECTOR: {
-          for (size_t c = 0; c < ml_mdata->index_size(i); c++){
-            if(c >= use_reference){
-              scale(idx) = stats->mean(c) * stats->mean(c) +
-                             stats->stdev(c) * stats->stdev(c);
-              idx++;
-            }
-          }
-          break;
-        }
-
-        // Dictionary
-        case ml_column_mode::DICTIONARY: {
-          for(size_t k = 0; k < ml_mdata->index_size(i); ++k) {
-            scale(idx) = stats->mean(k) * stats->mean(k) +
-                             stats->stdev(k) * stats->stdev(k);
-            idx++;
-          }
-          break;
-        }
-      } // End of column-switch-case
-    } // End-of metadata for
-
-    for(size_t i = 0; i < scale.size(); ++i) {
-      scale(i) = std::sqrt(std::max(scale(i), optimization::OPTIMIZATION_ZERO));
+      for (size_t k = skip_first ? 1 : 0; k < ml_mdata->index_size(i); ++k) {
+        double r = std::pow(stats->mean(k), 2) + std::pow(stats->stdev(k), 2);
+        scale(idx) = std::sqrt(std::max(r, optimization::OPTIMIZATION_ZERO));
+        ++idx;
+      }
     }
     scale(total_size-1) = 1;
 
@@ -347,9 +294,8 @@ class l2_rescaling: public standardization_interface {
    */
   void transform(DenseVector &point) const {
     DASSERT_EQ(point.size(), total_size);
-    for(size_t i = 0; i < point.n_rows; ++i) {
-      point(i) /= scale(i);
-    }
+    point = point.cwiseQuotient(scale);
+
   }
 
   /**
@@ -359,9 +305,10 @@ class l2_rescaling: public standardization_interface {
    *
    */
   void transform(DenseMatrix &points) const {
-    DASSERT_EQ(points.n_cols, total_size);
-
-    points *= arma::diagmat(scale).i();
+    DASSERT_EQ(points.cols(), total_size);
+    for (size_t i = 0; i < size_t(points.rows()); i++) {
+      points.row(i) = points.row(i).cwiseQuotient(scale.transpose());
+    }
   }
 
   /**
@@ -372,9 +319,7 @@ class l2_rescaling: public standardization_interface {
    */
   void inverse_transform(DenseVector &point) const {
     DASSERT_EQ(point.size(), total_size);
-    for(size_t i = 0; i < point.n_rows; ++i) {
-      point(i) *= scale(i);
-    }
+    point = point.cwiseProduct(scale);
   }
 
   // Sparse Vectors
@@ -387,9 +332,11 @@ class l2_rescaling: public standardization_interface {
    *
    */
   void inverse_transform(SparseVector &point) const {
-    for(auto& p : point) {
-      p.second *= scale(p.first);
+    DASSERT_EQ(point.size(), total_size);
+    for (SparseVector::InnerIterator i(point); i; ++i){
+      i.valueRef() = i.value() * scale(i.index());
     }
+
   }
 
   /**
@@ -400,8 +347,8 @@ class l2_rescaling: public standardization_interface {
    */
   void transform(SparseVector &point) const {
     DASSERT_EQ(point.size(), total_size);
-    for(auto& p : point) {
-      p.second /= scale(p.first);
+    for (SparseVector::InnerIterator i(point); i; ++i){
+      i.valueRef() = i.value() / scale(i.index());
     }
   }
 

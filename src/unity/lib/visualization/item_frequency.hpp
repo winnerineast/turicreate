@@ -8,6 +8,9 @@
 
 #include <unity/lib/gl_sarray.hpp>
 #include <sframe/groupby_aggregate_operators.hpp>
+#include <unity/lib/visualization/item_frequency.hpp>
+#include <unity/lib/visualization/plot.hpp>
+#include <unity/lib/visualization/vega_spec.hpp>
 
 #include "transformation.hpp"
 
@@ -28,13 +31,17 @@ class item_frequency_result: public sframe_transformation_output,
     groupby_operators::non_null_count m_non_null_count; // (inverse) num missing
 };
 
-typedef transformation<gl_sarray, item_frequency_result, 5000000> item_frequency_parent;
+typedef transformation<gl_sarray, item_frequency_result> item_frequency_parent;
 
 class item_frequency : public item_frequency_parent {
   public:
     virtual std::vector<item_frequency_result> split_input(size_t num_threads) override;
     virtual void merge_results(std::vector<item_frequency_result>& transformers) override;
 };
+
+std::shared_ptr<Plot> plot_item_frequency(
+  const gl_sarray& sa, const flexible_type& xlabel, const flexible_type& ylabel, 
+  const flexible_type& title);
 
 }} // turi::visualization
 

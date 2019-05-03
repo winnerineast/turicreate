@@ -8,6 +8,7 @@
 
 #include <sframe/groupby_aggregate_operators.hpp>
 #include <unity/lib/gl_sframe.hpp>
+#include <util/sys_util.hpp>
 
 #include "transformation.hpp"
 
@@ -45,7 +46,8 @@ class groupby_result {
     std::unordered_map<flexible_type, Aggregation> m_aggregators;
 
     virtual void insert_category(const flexible_type& category) {
-      auto inserted = m_aggregators.emplace(category, Aggregation());
+      TURI_ATTRIBUTE_UNUSED_NDEBUG auto inserted =
+        m_aggregators.emplace(category, Aggregation());
       DASSERT_TRUE(inserted.second); // emplace should succeed
       auto& agg = m_aggregators.at(category);
       DASSERT_TRUE(m_type != flex_type_enum::UNDEFINED);
@@ -130,7 +132,7 @@ class groupby_result {
 };
 
 template<typename Result>
-class groupby : public transformation<gl_sframe, Result, 5000000> {
+class groupby : public transformation<gl_sframe, Result> {
   protected:
     virtual void merge_results(std::vector<Result>& transformers) override {
       for (auto& result : transformers) {

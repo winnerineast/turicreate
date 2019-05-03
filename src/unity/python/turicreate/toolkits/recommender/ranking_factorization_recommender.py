@@ -216,29 +216,24 @@ def create(observation_data,
         (ICDM 2008), IEEE (2008).
 
     """
+    from turicreate._cython.cy_server import QuietProgress
 
-    method = 'ranking_factorization_recommender'
-
-    opts = {'model_name': method}
-    response = _turicreate.toolkits._main.run("recsys_init", opts)
-    model_proxy = response['model']
+    opts = {}
+    model_proxy = _turicreate.extensions.ranking_factorization_recommender()
+    model_proxy.init_options(opts)
 
     if user_data is None:
         user_data = _turicreate.SFrame()
     if item_data is None:
         item_data = _turicreate.SFrame()
 
+    nearest_items = _turicreate.SFrame()
     if target is None:
         binary_target = True
 
-    opts = {'dataset'                 : observation_data,
-            'user_id'                 : user_id,
+    opts = {'user_id'                 : user_id,
             'item_id'                 : item_id,
             'target'                  : target,
-            'user_data'               : user_data,
-            'item_data'               : item_data,
-            'nearest_items'           : _turicreate.SFrame(),
-            'model'                   : model_proxy,
             'random_seed'             : random_seed,
             'num_factors'             : num_factors,
             'regularization'          : regularization,
@@ -251,7 +246,6 @@ def create(observation_data,
             'solver'                  : solver,
 
             # Has no effect here.
-            # 'verbose'                 : verbose,
             'sgd_step_size'           : sgd_step_size}
 
     if unobserved_rating_value is not None:
@@ -269,8 +263,11 @@ def create(observation_data,
 
         opts.update(kwargs)
 
-    response = _turicreate.toolkits._main.run('recsys_train', opts, verbose)
-    return RankingFactorizationRecommender(response['model'])
+    extra_data = {"nearest_items" : _turicreate.SFrame()}
+    with QuietProgress(verbose):
+        model_proxy.train(observation_data, user_data, item_data, opts, extra_data)
+
+    return RankingFactorizationRecommender(model_proxy)
 
 _get_default_options = _get_default_options_wrapper(
                           'ranking_factorization_recommender',

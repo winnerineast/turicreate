@@ -3,10 +3,15 @@
  * Use of this source code is governed by a BSD-3-clause license that can
  * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
  */
+
+#ifndef __TC_VIS_HEATMAP
+#define __TC_VIS_HEATMAP
+
 #include <unity/lib/gl_sframe.hpp>
 
 #include "extrema.hpp"
 #include "groupby.hpp"
+#include <unity/lib/visualization/plot.hpp>
 
 namespace turi {
 namespace visualization {
@@ -52,15 +57,17 @@ namespace visualization {
    */
   class heatmap : public groupby<heatmap_result> {
     public:
-      virtual void init(const gl_sframe& source) override;
+      virtual void init(const gl_sframe& source, size_t batch_size) override;
       virtual std::vector<heatmap_result> split_input(size_t num_threads) override;
   };
 
-  void show_heatmap(const std::string& path_to_client,
+  std::shared_ptr<Plot> plot_heatmap(
                     const gl_sarray& x,
                     const gl_sarray& y,
-                    const std::string& xlabel,
-                    const std::string& ylabel,
-                    const std::string& title);
+                    const flexible_type& xlabel,
+                    const flexible_type& ylabel,
+                    const flexible_type& title);
 
 }}
+
+#endif

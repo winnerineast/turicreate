@@ -10,11 +10,9 @@
 #include <unity/lib/variant.hpp>
 #include <unordered_map>
 
-// Distributed
-#ifdef HAS_DISTRIBUTED
-#include <distributed/distributed_context.hpp>
-#include <rpc/dc_global.hpp>
-#include <rpc/dc.hpp>
+#ifdef __clang__
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Woverloaded-virtual"  // TODO: fix these issues below
 #endif
 
 const double EVAL_ZERO = 1.0e-9;
@@ -122,7 +120,7 @@ inline flexible_type average_with_none_skip(
  * Check that probabilities are in the range [0, 1]. 
  * 
 */
-inline bool check_probability_range(const double& pred) {
+inline void check_probability_range(const double& pred) {
   if ((pred < 0 - EVAL_ZERO) || (pred > (1 + EVAL_ZERO))) {
     log_and_throw("Prediction scores/probabilities are expected to be "
          "in the range [0, 1]. If they aren't, try normalizing them.");
@@ -132,7 +130,7 @@ inline bool check_probability_range(const double& pred) {
 /**
  * Check undefined. 
 */
-inline bool check_undefined(const flexible_type& pred) {
+inline void check_undefined(const flexible_type& pred) {
   if (pred.get_type() == flex_type_enum::UNDEFINED) {
     log_and_throw("Prediction scores/probabilities cannot contain missing "
          "values (i.e None values). Try removing them with 'dropna'.");
@@ -229,12 +227,12 @@ class supervised_evaluation_interface {
   /**
    * Default destructor.
    */
-  ~supervised_evaluation_interface() {}
+  virtual ~supervised_evaluation_interface() = default;
 
   /**
   * Default constructor.
   */
-  supervised_evaluation_interface(){}
+  supervised_evaluation_interface() = default;
 
   /**
    * Name of the evaluator.
@@ -371,12 +369,6 @@ class rmse: public supervised_evaluation_interface {
     }
     DASSERT_TRUE(total_examples > 0);
     DASSERT_TRUE(rmse >= 0);
-#ifdef HAS_DISTRIBUTED
-    auto dc = distributed_control_global::get_instance();
-    DASSERT_TRUE(dc != NULL);
-    dc->all_reduce(rmse, true);
-    dc->all_reduce(total_examples, true);
-#endif
     return to_variant(sqrt(rmse/total_examples));
   }
 
@@ -433,25 +425,11 @@ class max_error: public supervised_evaluation_interface {
    * Return the final metric.
    */
   variant_type get_metric() {
-#ifdef HAS_DISTRIBUTED
-    // A distributed call.
-    auto dc = distributed_control_global::get_instance();
-    DASSERT_TRUE(dc != NULL);
-    std::vector<double> max_max_error (dc->numprocs(), 0);
-    size_t procid = dc->procid();
-    max_max_error[procid] = *std::max_element(std::begin(max_error),
-                                       std::end(max_error));
-    dc->all_gather(max_max_error);
-    return to_variant(*std::max_element(std::begin(max_max_error),
-                                       std::end(max_max_error)));
-#else
-  double max_max_error = 0;
-  for(size_t i = 0; i < n_threads; i++){
-    max_max_error = std::max(max_max_error, max_error[i]);
-  }
-  return to_variant(max_max_error);
-#endif
-
+    double max_max_error = 0;
+    for(size_t i = 0; i < n_threads; i++){
+      max_max_error = std::max(max_max_error, max_error[i]);
+    }
+    return to_variant(max_max_error);
   }
 
 };
@@ -591,12 +569,6 @@ class multiclass_logloss: public supervised_evaluation_interface {
       total_examples += num_examples[i];
     }
     DASSERT_TRUE(total_examples > 0);
-#ifdef HAS_DISTRIBUTED
-    auto dc = distributed_control_global::get_instance();
-    DASSERT_TRUE(dc != NULL);
-    dc->all_reduce(total_logloss, true);
-    dc->all_reduce(total_examples, true);
-#endif
 
     total_examples = std::max<size_t>(1, total_examples);
     return to_variant(-total_logloss / total_examples);
@@ -629,7 +601,7 @@ class binary_logloss: public supervised_evaluation_interface {
   /**
    * Name of the evaluator.
    */
-  std::string name() const {
+  std::string name() const override {
     return (std::string)("binary_logloss");
   }
 
@@ -638,14 +610,14 @@ class binary_logloss: public supervised_evaluation_interface {
    * Returns true of this evaluator works on probabilities/scores (vs) 
    * classes. 
    */
-  bool is_prob_evaluator() const {
+  bool is_prob_evaluator() const override {
     return true;
   }
 
   /**
    * Init the state with a variant type.
    */
-  void init(size_t _n_threads = 1){
+  void init(size_t _n_threads = 1) override {
     n_threads = _n_threads;
     logloss.resize(n_threads);
     num_examples.resize(n_threads);
@@ -666,8 +638,8 @@ class binary_logloss: public supervised_evaluation_interface {
    *       a flexible_type compare.
    */
   void register_unmapped_example(const size_t& target,
-                                const double& prediction,
-                                size_t thread_id = 0){
+                                 const double& prediction,
+                                 size_t thread_id = 0) {
     DASSERT_TRUE(target == 0 || target == 1);
     DASSERT_TRUE(thread_id < n_threads);
     num_examples[thread_id]++;
@@ -687,7 +659,7 @@ class binary_logloss: public supervised_evaluation_interface {
    */
   void register_example(const flexible_type& target,
                         const flexible_type& prediction,
-                        size_t thread_id = 0){
+                        size_t thread_id = 0) override {
     DASSERT_TRUE(thread_id < n_threads);
     check_undefined(prediction);
     DASSERT_TRUE((prediction.get_type() == flex_type_enum::FLOAT) || 
@@ -706,7 +678,7 @@ class binary_logloss: public supervised_evaluation_interface {
   /**
    * Return the final metric.
    */
-  variant_type get_metric() {
+  variant_type get_metric() override {
     double total_logloss = 0;
     size_t total_examples = 0;
     for(size_t i = 0; i < n_threads; i++){
@@ -714,12 +686,6 @@ class binary_logloss: public supervised_evaluation_interface {
       total_examples += num_examples[i];
     }
     DASSERT_TRUE(total_examples > 0);
-#ifdef HAS_DISTRIBUTED
-    auto dc = distributed_control_global::get_instance();
-    DASSERT_TRUE(dc != NULL);
-    dc->all_reduce(total_logloss, true);
-    dc->all_reduce(total_examples, true);
-#endif
     total_examples = std::max<size_t>(1, total_examples);
     return to_variant(-total_logloss/total_examples);
   }
@@ -814,12 +780,6 @@ class classifier_accuracy: public supervised_evaluation_interface {
     }
     DASSERT_TRUE(total_examples > 0);
     DASSERT_TRUE(total_accuracy >= 0);
-#ifdef HAS_DISTRIBUTED
-    auto dc = distributed_control_global::get_instance();
-    DASSERT_TRUE(dc != NULL);
-    dc->all_reduce(total_accuracy, true);
-    dc->all_reduce(total_examples, true);
-#endif
     return to_variant(total_accuracy * 1.0 / total_examples);
   }
 
@@ -925,36 +885,7 @@ class confusion_matrix: public supervised_evaluation_interface {
         }
       }
     }
-
-    // Merge by machine.
-#ifdef HAS_DISTRIBUTED
-    auto dc = distributed_control_global::get_instance();
-
-    // Gather.
-    std::vector<std::vector<
-                std::pair<std::pair<flexible_type, flexible_type>,
-                          size_t>>> final_counts_machine;
-
-    final_counts_machine.resize(dc->numprocs());
-    size_t procid = dc->procid();
-    for(const auto& kvp: final_counts_thread) {
-      final_counts_machine[procid].push_back(kvp);
-    }
-    dc->all_gather(final_counts_machine);
-
-    // Merge.
-    for(size_t i = 0; i < final_counts_machine.size(); i++){
-      for (const auto& kvp: final_counts_machine[i]){
-        if(final_counts.count(kvp.first) > 0){
-          final_counts[kvp.first] += kvp.second;
-        } else {
-          final_counts[kvp.first] = kvp.second;
-        }
-      }
-    }
-#else
     final_counts = final_counts_thread;
-#endif
 
     // Gather labels.
     DASSERT_TRUE(final_counts_thread.size() >= 0);
@@ -1118,7 +1049,6 @@ class precision_recall_base : public confusion_matrix {
 
     // Accumulate counts & labels for each class.
     this->gather_counts_and_labels();
-    size_t num_classes = labels.size();
     for (const auto& l: labels) {
       tp[l] = 0;
       fp[l] = 0;
@@ -1249,11 +1179,11 @@ class fbeta_score: public precision_recall_base {
         return to_variant(fbeta_scores);
       }
 
+      default: {
+        log_and_throw(std::string("Unsupported average_type_enum case"));
+        ASSERT_UNREACHABLE();
+      }
     }
-
-    // Should never come here.
-    DASSERT_TRUE(false);
-
   }
 
 };
@@ -1328,10 +1258,12 @@ class precision : public precision_recall_base {
       {
         return to_variant(precision_scores);
       }
-    }
 
-    // Should never happen.
-    DASSERT_TRUE(false);
+      default: {
+        log_and_throw(std::string("Unsupported average_type_enum case"));
+        ASSERT_UNREACHABLE();
+      }
+    }
   }
 
 };
@@ -1408,10 +1340,12 @@ class recall : public precision_recall_base {
       {
         return to_variant(recall_scores);
       }
-    }
 
-    // Should never happen.
-    DASSERT_TRUE(false);
+      default: {
+        log_and_throw(std::string("Unsupported average_type_enum case"));
+        ASSERT_UNREACHABLE();
+      }
+    }
   }
 
 };
@@ -1454,8 +1388,10 @@ class flexible_accuracy : public precision_recall_base {
 
     // Multi-class vs binary classification.
     std::unordered_map<flexible_type, double> accuracy_scores;
+    std::unordered_map<flexible_type, flexible_type> precision_scores;
     for (const auto& l: labels) {
       accuracy_scores[l] = double(tp[l] + tn[l])/(tp[l] + fp[l] + tn[l] + fn[l]);
+      precision_scores[l] = compute_precision_score(tp[l], fp[l]);
     }
 
     // For binary classification, return the scores for the final label.
@@ -1496,12 +1432,14 @@ class flexible_accuracy : public precision_recall_base {
       // All scores.
       case average_type_enum::NONE:
       {
-        return to_variant(accuracy_scores);
+        return to_variant(precision_scores);
+      }
+
+      default: {
+        log_and_throw(std::string("Unsupported average_type_enum case"));
+        ASSERT_UNREACHABLE();
       }
     }
-
-    // Should never happen.
-    DASSERT_TRUE(false);
   }
 };
 
@@ -1542,7 +1480,7 @@ class roc_curve: public supervised_evaluation_interface {
   // Options
   average_type_enum average = average_type_enum::NONE;
   bool binary = false;
-  const size_t NUM_BINS=1e5;
+  const size_t NUM_BINS=100000;
   size_t n_threads = 0;
   size_t num_classes = 0;
 
@@ -1650,13 +1588,13 @@ class roc_curve: public supervised_evaluation_interface {
 
   const float get_bin(double prediction) const {
     // Assign this prediction to an integer that indicates a "bin" id.
-    size_t bin = std::floor((double) prediction * (double) NUM_BINS);
+    size_t bin = std::floor((double) std::max(0.0, prediction * NUM_BINS));
 
     // This effectively makes the upper bin [0.999, 1] instead of [0.999, 1).
     // If a prediction is exactly 1.0, then it would get assigned to
     // a bin with lower bound 1.0, but since we want 1000 bins, we move 
     // these into the bin with lower bound 0.999.
-    if (bin == NUM_BINS) bin -= 1; 
+    if (bin >= NUM_BINS) bin = NUM_BINS - 1;
     return bin;
   }
 
@@ -1891,11 +1829,11 @@ class roc_curve: public supervised_evaluation_interface {
         return compute_roc_curve(total_fp, total_tp, total_examples, 0, false, inv_map);
       }
 
-      default:
-        DASSERT_TRUE(false); 
+      default: {
+        log_and_throw(std::string("Unsupported average_type_enum case"));
+        ASSERT_UNREACHABLE();
+      }
     }
-
-    DASSERT_TRUE(false);
   }
 };
 
@@ -2013,12 +1951,11 @@ class auc: public roc_curve {
         return to_variant(auc_score / num_classes);
       }
 
-      default:
-        DASSERT_TRUE(false);
-
-
+      default: {
+        log_and_throw(std::string("Unsupported average_type_enum case"));
+        ASSERT_UNREACHABLE();
+      }
     }
-    DASSERT_TRUE(false);
   }
 };
 
@@ -2061,10 +1998,6 @@ inline std::shared_ptr<supervised_evaluation_interface> get_evaluator_metric(
     DASSERT_TRUE(kwargs.count("inv_index_map") > 0);
     std::map<size_t, flexible_type> inv_map = variant_get_value<
                  std::map<size_t, flexible_type>>(kwargs.at("inv_index_map"));
-    size_t num_classes = size_t(-1);
-    if (kwargs.count("num_classes") > 0) {
-      num_classes = variant_get_value<size_t>(kwargs.at("num_classes"));
-    }
     evaluator = std::make_shared<confusion_matrix>(confusion_matrix(inv_map));
 
   } else if(metric == "accuracy"){
@@ -2157,4 +2090,9 @@ inline std::shared_ptr<supervised_evaluation_interface> get_evaluator_metric(
 
 } // evaluation
 } // turicreate
+
+#ifdef __clang__
+  #pragma clang diagnostic pop
+#endif
+
 #endif

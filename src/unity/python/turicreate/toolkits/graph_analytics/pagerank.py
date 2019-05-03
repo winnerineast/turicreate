@@ -6,8 +6,9 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
-import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
 
 
@@ -154,7 +155,7 @@ def create(graph, reset_probability=0.15,
     If given an :class:`~turicreate.SGraph` ``g``, we can create
     a :class:`~turicreate.pagerank.PageRankModel` as follows:
 
-    >>> g = turicreate.load_graph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
+    >>> g = turicreate.load_sgraph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
     >>> pr = turicreate.pagerank.create(g)
 
     We can obtain the page rank corresponding to each vertex in the graph ``g``
@@ -173,6 +174,8 @@ def create(graph, reset_probability=0.15,
     --------
     PagerankModel
     """
+    from turicreate._cython.cy_server import QuietProgress
+
     if not isinstance(graph, _SGraph):
         raise TypeError('graph input must be a SGraph object.')
 
@@ -181,7 +184,8 @@ def create(graph, reset_probability=0.15,
             'single_precision': _single_precision,
             'graph': graph.__proxy__}
 
-    params = _main.run('pagerank', opts, verbose)
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.pagerank.create(opts)
     model = params['model']
 
     return PagerankModel(model)

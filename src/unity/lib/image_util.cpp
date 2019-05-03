@@ -4,14 +4,19 @@
  * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
  */
 #include <unity/lib/image_util.hpp>
-#include <unity/lib/image_util_impl.hpp>
+
+#include <algorithm>
+#include <string>
+
+#include <image/image_util_impl.hpp>
 #include <sframe/sframe_iterators.hpp>
 #include <sframe/sframe.hpp>
 #include <unity/lib/unity_sframe.hpp>
 #include <fileio/sanitize_url.hpp>
 #include <sframe_query_engine/util/aggregates.hpp>
 #include <unity/lib/toolkit_function_macros.hpp>
-
+#include <boost/algorithm/string.hpp>
+#include <boost/filesystem/path.hpp>
 
 namespace turi{
 
@@ -151,6 +156,8 @@ flexible_type load_image(const std::string& url, const std::string format) {
   return ret;
 };
 
+namespace {
+
 size_t load_images_impl(std::vector<std::string>& all_files,
                         sarray<flexible_type>::iterator& image_iter,
                         sarray<flexible_type>::iterator& path_iter,
@@ -220,17 +227,32 @@ std::vector<std::string> get_directory_files(std::string url, bool recursive) {
   path_status_vec_t path_status_vec = fileio::get_directory_listing(url);
   std::vector<std::string> ret;
   for (const auto& path_status : path_status_vec) {
-    if (path_status.first[0] != '.') {
-      if (recursive && path_status.second == fileio::file_status::DIRECTORY) {
-        auto tmp = get_directory_files(path_status.first, recursive);
-        ret.insert(ret.end(), tmp.begin(), tmp.end());
-      } else if (path_status.second == fileio::file_status::REGULAR_FILE){
-        ret.push_back(path_status.first);
-      }
+    if (recursive && path_status.second == fileio::file_status::DIRECTORY) {
+      auto tmp = get_directory_files(path_status.first, recursive);
+      ret.insert(ret.end(), tmp.begin(), tmp.end());
+    } else if (path_status.second == fileio::file_status::REGULAR_FILE){
+      ret.push_back(path_status.first);
     }
   }
   return ret;
 }
+
+bool lacks_image_extension(const std::string& url) {
+
+  // Return true unless the url ends with any of these strings.
+  const std::initializer_list<const char*> extensions =
+      {".jpg", ".jpeg", ".png"};
+
+  // Define a predicate (over extensions) that performs case-insensitive
+  // matching against the url.
+  auto ends_url = [&url](const char* extension) {
+    return boost::algorithm::iends_with(url, extension);
+  };
+
+  return std::none_of(extensions.begin(), extensions.end(), ends_url);
+}
+
+}  // namespace
 
 /**
  * Construct an sframe of flex_images, with url pointing to directory where images reside. 
@@ -238,7 +260,40 @@ std::vector<std::string> get_directory_files(std::string url, bool recursive) {
 std::shared_ptr<unity_sframe> load_images(std::string url, std::string format, bool with_path, bool recursive,
                                           bool ignore_failure, bool random_order) {
     log_func_entry();
-    std::vector<std::string> all_files = get_directory_files(url, recursive);
+
+    std::vector<std::string> all_files;
+
+    // See what's at the user-provided location.
+    switch (fileio::get_file_status(url)) {
+
+    case fileio::file_status::MISSING:
+      log_and_throw_io_failure(sanitize_url(url) + " not found.");
+
+    case fileio::file_status::REGULAR_FILE:
+      all_files.push_back(url);
+      break;
+
+    case fileio::file_status::DIRECTORY:
+      all_files = get_directory_files(url, recursive);
+      if (format != "JPG" && format != "PNG") {
+        // We will deduce file formats from file extensions. Prune the list of
+        // files to those supported.
+        auto first_to_remove = std::remove_if(
+            all_files.begin(), all_files.end(), lacks_image_extension);
+        if (first_to_remove == all_files.begin() && !all_files.empty()) {
+          logprogress_stream << "Directory " << sanitize_url(url)
+                             << " does not contain any files with supported"
+                             << " image extensions: .jpg .jpeg .png"
+                             << std::endl;
+        }
+        all_files.erase(first_to_remove, all_files.end());
+      }
+      break;
+
+    case fileio::file_status::FS_UNAVAILABLE:
+      log_and_throw_io_failure("Error getting file system status for "
+                               + sanitize_url(url));
+    }
 
     std::vector<std::string> column_names;
     std::vector<flex_type_enum> column_types;
@@ -292,11 +347,6 @@ std::shared_ptr<unity_sframe> load_images(std::string url, std::string format, b
     return image_unity_sframe;
 }
 
-
-void decode_image_inplace(image_type& image) {
-  image_util_detail::decode_image_impl(image); 
-}
-
 /**
  * Decode the image into raw pixels
  */
@@ -306,7 +356,7 @@ flexible_type decode_image(const flexible_type& image) {
   }
   flexible_type ret = image;
   flex_image& img = ret.mutable_get<flex_image>();
-  image_util_detail::decode_image_impl(img);
+  turi::decode_image_inplace(img);
   return ret;
 };
 
@@ -319,7 +369,7 @@ flexible_type encode_image(const flexible_type& image) {
   }
   flexible_type ret = image;
   flex_image& img = ret.mutable_get<flex_image>();
-  image_util_detail::encode_image_impl(img);
+  turi::encode_image_inplace(img);
   return ret;
 };
 
@@ -338,42 +388,50 @@ std::shared_ptr<unity_sarray> decode_image_sarray(std::shared_ptr<unity_sarray> 
 /**
  * Reisze an sarray of flex_images with the new size.
  */
-flexible_type resize_image(const flexible_type& image, size_t resized_width, size_t resized_height, size_t resized_channels, bool decode) {
-  if (image.get_type() != flex_type_enum::IMAGE){
+flexible_type resize_image(const flexible_type& input, size_t resized_width,
+			   size_t resized_height, size_t resized_channels,
+			   bool decode, int resample_method) {
+  if (input.get_type() != flex_type_enum::IMAGE){
     std::string error = "Cannot resize non-image type";
     log_and_throw(error);
   }
-  const flex_image& src_image = image.get<flex_image>();
-  // is this resize a no opt?
-  if (src_image.m_width == resized_width && src_image.m_height == resized_height && src_image.m_channels == resized_channels && src_image.is_decoded() == decode) {
-    return image;
+  flex_image image = input.get<flex_image>();
+  auto has_desired_size = [&] {
+    return image.m_width == resized_width && image.m_height == resized_height && image.m_channels == resized_channels;
+  };
+
+  // Is this resize a no-op?
+  if (has_desired_size() && image.is_decoded() == decode) {
+    return input;
   }
-  char* resized_data;
-  if (src_image.is_decoded()) {
-    // skip decoding
-    image_util_detail::resize_image_impl((const char*)src_image.get_image_data(),
-        src_image.m_width, src_image.m_height, src_image.m_channels, resized_width,
-        resized_height, resized_channels, &resized_data);
-  } else {
-    // make a copy and decode
-    flexible_type tmp = image;
-    flex_image& decoded_image = tmp.mutable_get<flex_image>();
-    image_util_detail::decode_image_impl(decoded_image);
-    image_util_detail::resize_image_impl((const char*)decoded_image.get_image_data(),
-        decoded_image.m_width, decoded_image.m_height, decoded_image.m_channels, resized_width,
-        resized_height, resized_channels, &resized_data);
+
+  // Decode if necessary.
+  if (!image.is_decoded()) {
+    image_util_detail::decode_image_impl(image);
   }
-  flex_image dst_img;
-  dst_img.m_width = resized_width;
-  dst_img.m_height = resized_height;
-  dst_img.m_channels = resized_channels;
-  dst_img.m_format = Format::RAW_ARRAY;
-  dst_img.m_image_data_size = resized_height * resized_width * resized_channels;
-  dst_img.m_image_data.reset(resized_data);
+
+  // Resize if necessary.
+  if (!has_desired_size()) {
+    char* resized_data;
+    image_util_detail::resize_image_impl(
+        reinterpret_cast<const char*>(image.get_image_data()),
+	image.m_width, image.m_height, image.m_channels,
+	resized_width, resized_height, resized_channels,
+	&resized_data, resample_method);
+    image.m_width = resized_width;
+    image.m_height = resized_height;
+    image.m_channels = resized_channels;
+    image.m_format = Format::RAW_ARRAY;
+    image.m_image_data_size = resized_height * resized_width * resized_channels;
+    image.m_image_data.reset(resized_data);
+  }
+
+  // Encode if necessary.
   if (!decode) {
-    image_util_detail::encode_image_impl(dst_img);
+    image_util_detail::encode_image_impl(image);
   }
-  return dst_img;
+
+  return image;
 };
 
 
@@ -385,10 +443,11 @@ std::shared_ptr<unity_sarray> resize_image_sarray(
     size_t resized_width, 
     size_t resized_height, 
     size_t resized_channels,
-    bool decode) {
+    bool decode,
+    int resample_method) {
   log_func_entry();
   auto fn = [=](const flexible_type& f)->flexible_type {
-      return flexible_type(resize_image(f, resized_width, resized_height, resized_channels, decode));
+      return flexible_type(resize_image(f, resized_width, resized_height, resized_channels, decode, resample_method));
     };
   auto ret = image_sarray->transform_lambda(fn, flex_type_enum::IMAGE, true, 0);
   return std::static_pointer_cast<unity_sarray>(ret);

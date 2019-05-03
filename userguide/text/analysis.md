@@ -1,4 +1,4 @@
-#Text Analysis
+# Text Analysis
 
 Suppose our text data is currently arranged into a single file, where
 each line of that file contains all of the text in a single document.
@@ -38,12 +38,14 @@ Note: Only the head of the SFrame is printed.
 
 ##### Text cleaning
 
+First, we must convert our SFrame of `str` into an SFrame of type `dict` using [turicreate.text_analytics.count_words](https://apple.github.io/turicreate/docs/api/generated/turicreate.text_analytics.count_words). This operations converts the array of strings into an array of dictionaries. The keys are each word in the document and the values are the number of times the word occurs.
+
 We can easily remove all words do not occur at least twice in each
 document using
 [SArray.dict_trim_by_values](https://apple.github.io/turicreate/docs/api/generated/turicreate.SArray.dict_trim_by_values.html).
 
 Turi Create also contains a helper function called
-[stopwords](https://apple.github.io/turicreate/docs/api/generated/turicreate.text_analytics.stopwords.html?highlight=stopwords#turicreate.text_analytics.stopwords)
+[stop_words](https://apple.github.io/turicreate/docs/api/generated/turicreate.text_analytics.stop_words.html?highlight=stopwords#turicreate.text_analytics.stop_words)
 that returns a list of common words. We can use
 [SArray.docs.dict_trim_by_keys](https://apple.github.io/turicreate/docs/api/generated/turicreate.SArray.dict_trim_by_keys.html)
 to remove these words from the documents as a preprocessing step. NB:

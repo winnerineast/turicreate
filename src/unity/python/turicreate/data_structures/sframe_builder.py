@@ -10,7 +10,7 @@ from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
 
-from ..cython.cy_sframe_builder import UnitySFrameBuilderProxy
+from .._cython.cy_sframe_builder import UnitySFrameBuilderProxy
 from .sframe import SFrame 
 from ..util import _make_internal_url
 import logging as _logging
@@ -149,7 +149,6 @@ class SFrameBuilder(object):
         if not hasattr(data, '__iter__'):
             raise TypeError("append_multiple must be passed an iterable object")
         tmp_list = []
-        block_pos = 0
 
         # Avoid copy in cases that we are passed materialized data that is
         # smaller than our block size

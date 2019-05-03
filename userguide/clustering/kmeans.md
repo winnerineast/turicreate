@@ -28,8 +28,9 @@ distance from point $$x$$ to center $$B$$ when assigning $$x$$ to a cluster.
 
 #### Basic Usage
 
-We illustrate usage of Turi Create K-means with a dataset used to classify 
-schizophrenic subjects based on MRI scans. The original data consists of
+We illustrate usage of Turi Create K-means with the dataset from the [June
+2014 Kaggle competition to classify schizophrenic subjects based on MRI
+scans](https://www.kaggle.com/c/mlsp-2014-mri). Download **Train.zip** from the data tab.[<sup>1</sup>](../datasets.md) The original data consists of
 two sets of features: functional network connectivity (FNC) features and
 source-based morphometry (SBM) features, which we incorporate into a single
 [`SFrame`](https://apple.github.io/turicreate/docs/api/generated/turicreate.SFrame.html)
@@ -98,7 +99,7 @@ centers, one per row, in terms of the same features used to create the
 model.
 
 ```python
-kmeans_model['cluster_info'].print_rows(num_columns=5, max_row_width=80,
+kmeans_model.cluster_info.print_rows(num_columns=5, max_row_width=80,
                                         max_column_width=10)
 ```
 ```no-highlight
@@ -120,7 +121,7 @@ corresponding cluster: ID number, number of points in the cluster, and the
 within-cluster sum of squared distances to the center.
 
 ```python
-kmeans_model['cluster_info'][['cluster_id', 'size', 'sum_squared_distance']]
+kmeans_model.cluster_info[['cluster_id', 'size', 'sum_squared_distance']]
 ```
 ```no-highlight
 +------------+------+----------------------+
@@ -141,7 +142,7 @@ data point, along with the Euclidean distance from the point to its assigned
 cluster's center.
 
 ```python
-kmeans_model['cluster_id'].head()
+kmeans_model.cluster_id.head()
 ```
 ```no-highlight
 +--------+------------+---------------+
@@ -212,7 +213,7 @@ K-means model.
 kmeans_sample = tc.kmeans.create(sf.sample(0.2), num_clusters=K,
                                  max_iterations=0)
 
-my_centers = kmeans_sample['cluster_info']
+my_centers = kmeans_sample.cluster_info
 my_centers = my_centers.remove_columns(['cluster_id', 'size',
                                         'sum_squared_distance'])
 

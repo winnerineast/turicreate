@@ -15,9 +15,11 @@
 
 // Toolkits
 #include <optimization/optimization_interface.hpp>
-#include <toolkits/supervised_learning/xgboost.hpp>
-#include <toolkits/supervised_learning/supervised_learning.hpp>
-#include <toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
+#include <unity/toolkits/supervised_learning/xgboost.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
+#include <unity/toolkits/supervised_learning/classifier_evaluations.hpp>
+#include <unity/toolkits/supervised_learning/automatic_model_creation.hpp>
 
 // ML Data
 #include <ml_data/ml_data_iterator.hpp>
@@ -25,19 +27,8 @@
 // Evaluation
 #include <unity/toolkits/evaluation/metrics.hpp>
 
-// Distributed
-#ifdef HAS_DISTRIBUTED
-#include <unity/dml/dml_class_registry.hpp>
-#include <distributed/distributed_context.hpp>
-#include <rpc/dc_global.hpp>
-#include <rpc/dc.hpp>
-#endif
-
-
 namespace turi {
 namespace supervised {
-
-constexpr size_t WIDE_DATA = 200;
 
 // TODO: List of todo's for this file
 //------------------------------------------------------------------------------
@@ -53,19 +44,12 @@ EXPORT std::shared_ptr<supervised_learning_model_base> create(
   // Construct an object of the right type.
   // --------------------------------------------------------------------------
   std::shared_ptr<supervised_learning_model_base> model;
-#ifdef HAS_DISTRIBUTED
-   model = std::static_pointer_cast<supervised_learning_model_base>(
-               dml_class_registry::get_instance().get_toolkit_class(model_name));
-#else
    model = std::static_pointer_cast<supervised_learning_model_base>(
                get_unity_global_singleton()->create_toolkit_class(model_name));
-#endif
 
   // Error handling.
   // --------------------------------------------------------------------------
-  bool support_image_type = false; // used to be neural net
   check_empty_data(X);
-  check_feature_column_types(X, support_image_type);
   check_target_column_type(model_name, y);
 
   // Initialize
@@ -84,9 +68,7 @@ EXPORT std::shared_ptr<supervised_learning_model_base> create(
         kwargs, "features_validation")->get_underlying_sframe());
     sframe valid_y = *(safe_varmap_get<std::shared_ptr<unity_sframe>>(
         kwargs, "target_validation")->get_underlying_sframe());
-    check_feature_column_types(valid_X, support_image_type);
     check_target_column_type(model_name, valid_y);
-    check_feature_column_types_match(X, valid_X);
     model->init(X, y, valid_X, valid_y, missing_value_action);
   }
 
@@ -117,6 +99,7 @@ void supervised_learning_model_base::init(const sframe& X, const sframe& y,
   std::string target_col = y.column_name(0);
   std::map<std::string, ml_column_mode> mode_overides;
   std::vector<std::string> sorted_columns;
+
   if(this->is_classifier()) {
     mode_overides[target_col] = ml_column_mode::CATEGORICAL_SORTED;
     sorted_columns = {target_col};
@@ -125,6 +108,7 @@ void supervised_learning_model_base::init(const sframe& X, const sframe& y,
   // Error out if target column has missing values
   auto target_sa = std::make_shared<unity_sarray>();
   target_sa->construct_from_sarray(y.select_column(0));
+
   bool target_has_na = ((gl_sarray)target_sa).apply(
       [](const flexible_type& x) {
         return x.get_type() == flex_type_enum::UNDEFINED;
@@ -141,30 +125,12 @@ void supervised_learning_model_base::init(const sframe& X, const sframe& y,
   // Construct the ml_data.
   ml_data data;
   sframe sf_data = X.add_column(y.select_column(0), target_col);
-#ifdef HAS_DISTRIBUTED
-  auto dc = distributed_control_global::get_instance();
-  DASSERT_TRUE(dc != NULL);
-  size_t procid = dc->procid();
-  size_t numprocs = dc->numprocs();
-  size_t start_row = procid * X.num_rows() / numprocs;
-  size_t end_row = (procid + 1) * X.num_rows() / numprocs;
-  data.fill(sf_data,
-            std::make_pair(start_row, end_row),
-            target_col,
-            mode_overides,
-            false, // immutable metadta, default false
-            missing_value_action);
-  reconcile_distributed_ml_data(data, sorted_columns);
-#else
   data.fill(sf_data, target_col, mode_overides, false, missing_value_action);
-#endif
-  this->ml_mdata = data.metadata();
+  ml_mdata = data.metadata();
 
   // Update the model
-  std::vector<std::string> feature_names =
-                   get_feature_names_from_metadata(this->ml_mdata);
-  std::vector<std::string> feature_column_names =
-                   get_feature_column_names_from_metadata(this->ml_mdata);
+  std::vector<std::string> feature_names = ml_mdata->feature_names(false);
+  std::vector<std::string> feature_column_names = this->ml_mdata->column_names();
 
   this->state["target"] =  to_variant((this->ml_mdata)->target_column_name());
   this->state["unpacked_features"] = to_variant(feature_names);
@@ -173,17 +139,23 @@ void supervised_learning_model_base::init(const sframe& X, const sframe& y,
   this->state["num_features"] = feature_column_names.size();
   this->state["num_unpacked_features"] = feature_names.size();
 
+  // Turned off temporarily until we can find a better way to hide for image classification
+  bool simple_mode = true;
+
+
   // Check the number of dimensions in this dataset is small, otherwise warn the
   // user. (see  #3001 for context)
-  size_t num_dims = get_number_of_coefficients(this->ml_mdata);
-  if(num_dims >= X.num_rows()) {
-    std::stringstream ss;
-    ss << "WARNING: The number of feature dimensions in this problem is "
-       << "very large in comparison with the number of examples. Unless "
-       << "an appropriate regularization value is set, this model "
-       << "may not provide accurate predictions for a validation/test set."
-       << std::endl;
-    logprogress_stream << ss.str() << std::endl;
+  if (not simple_mode) {
+      size_t num_dims = get_number_of_coefficients(this->ml_mdata);
+      if(num_dims >= X.num_rows()) {
+        std::stringstream ss;
+        ss << "WARNING: The number of feature dimensions in this problem is "
+           << "very large in comparison with the number of examples. Unless "
+           << "an appropriate regularization value is set, this model "
+           << "may not provide accurate predictions for a validation/test set."
+           << std::endl;
+        logprogress_stream << ss.str() << std::endl;
+      }
   }
 
   ml_data valid_data;
@@ -200,8 +172,9 @@ void supervised_learning_model_base::init(const sframe& X, const sframe& y,
   // Finally call the model-specific init function.
   model_specific_init(data, valid_data);
 
-  // Raise error if mean and variance are not finite.
-  check_feature_means_and_variances(this->ml_mdata, show_extra_warnings);
+  // Raise error if mean and variance are not finite
+  check_feature_means_and_variances(this->ml_mdata,
+             show_extra_warnings && (not simple_mode));
 
   // One class classification error message.
   if(this->is_classifier()) {
@@ -322,14 +295,6 @@ size_t supervised_learning_model_base::num_examples() const{
 }
 
 /**
- * Clone to a model_base object. No longer needed.
- */
-ml_model_base* supervised_learning_model_base::ml_model_base_clone() {
-  return this;
-}
-
-
-/**
  * Get training stats.
  */
 std::map<std::string, flexible_type>
@@ -379,17 +344,36 @@ std::vector<std::string>
   return tracking_metrics;
 }
 
+std::string supervised_learning_model_base::get_metric_display_name(const std::string& metric) const {
+  const static std::unordered_map<std::string, std::string> display_names = {
+    {"accuracy", "Accuracy"},
+    {"auc", "Area Under Curve"},
+    {"log_loss", "Log Loss"},
+    {"max_error", "Max Error"},
+    {"rmse", "Root-Mean-Square Error"},
+  };
+
+  auto found = display_names.find(metric);
+  if (found != display_names.end()) {
+    return found->second;
+  }
+
+  // Shouldn't get here; it means we neglected to map to a display name for this metric.
+  // If there is a metric and it's not in the map above, please add it.
+  // In the meantime, we fall back to using the internal name as the display name.
+#ifndef NDEBUG
+  std::string msg = "Could not find a display name for metric " + metric;
+  DASSERT_MSG(false, msg.c_str());
+#endif
+  return metric;
+}
 
 /**
  * Classify (with a probability) using a trained model.
  */
 sframe supervised_learning_model_base::classify(const ml_data& test_data,
                                             const std::string& output_type){
-  DASSERT_TRUE(name() == "classifier_logistic_regression" ||
-               name() == "classifier_svm" ||
-               name() == "random_forest_classifier" ||
-               name() == "decision_tree_classifier" ||
-               name() == "boosted_trees_classifier");
+  DASSERT_TRUE(is_classifier());
 
   // Class predictions
   sframe sf_class;
@@ -456,7 +440,7 @@ supervised_learning_model_base::predict(const ml_data& test_data,
   }
 
   // Multi-class error
-  if (name().find("classifier") != std::string::npos) {
+  if (is_classifier()) {
     size_t num_classes = variant_get_value<size_t>(state.at("num_classes"));
     if (((output_type == "margin") || (output_type == "probability"))
                                                   && num_classes > 2){
@@ -493,13 +477,13 @@ supervised_learning_model_base::predict(const ml_data& test_data,
       // Dense predict.
       if (this->is_dense()) {
         fill_reference_encoding(*it, x);
-        x(variables - 1) = 1;
+        x.coeffRef(variables - 1) = 1;
         preds = predict_single_example(x, output_type_enum);
 
       // Sparse predict.
       } else {
         fill_reference_encoding(*it, x_sp);
-        x_sp.insert(variables - 1, 1);
+        x_sp.coeffRef(variables - 1) = 1;
         preds = predict_single_example(x_sp, output_type_enum);
       }
 
@@ -513,8 +497,8 @@ supervised_learning_model_base::predict(const ml_data& test_data,
 
 gl_sarray supervised_learning_model_base::fast_predict(
     const std::vector<flexible_type>& rows,
-    const std::string& output_type,
-    const std::string& missing_value_action) {
+    const std::string& missing_value_action,
+    const std::string& output_type) {
 
   // Initialize.
   size_t variables = 0;
@@ -535,6 +519,9 @@ gl_sarray supervised_learning_model_base::fast_predict(
   } else if (output_type == "probability_vector"){
     ret_type = flex_type_enum::VECTOR;
   } else {
+    if (output_type == "probability" && variant_get_value<size_t>(state.at("num_classes")) > 2) {
+      log_and_throw("Output type 'probability' is only supported for binary classification. For multi-class classification, use predict_topk() instead.");
+    }
     ret_type = flex_type_enum::FLOAT;
   }
   gl_sarray_writer writer(ret_type, 1 /* 1 segment */);
@@ -552,14 +539,14 @@ gl_sarray supervised_learning_model_base::fast_predict(
       DenseVector dense_vec(variables);
       fill_reference_encoding(ml_data_row_reference::from_row(
                this->ml_mdata, row.get<flex_dict>(), na_enum), dense_vec);
-      dense_vec(variables - 1) = 1;
+      dense_vec.coeffRef(variables - 1) = 1;
       flexible_type pred = predict_single_example(dense_vec, pred_type_enum);
       writer.write(pred, 0);
     } else {
       SparseVector sparse_vec(variables);
       fill_reference_encoding(ml_data_row_reference::from_row(
                this->ml_mdata, row.get<flex_dict>(), na_enum), sparse_vec);
-      sparse_vec.insert(variables - 1, 1);
+      sparse_vec.coeffRef(variables - 1) = 1;
       flexible_type pred = predict_single_example(sparse_vec, pred_type_enum);
       writer.write(pred, 0);
     }
@@ -570,21 +557,17 @@ gl_sarray supervised_learning_model_base::fast_predict(
 gl_sframe supervised_learning_model_base::fast_classify(
     const std::vector<flexible_type>& rows,
     const std::string& missing_value_action) {
-  DASSERT_TRUE(name() == "classifier_logistic_regression" ||
-               name() == "classifier_svm" ||
-               name() == "random_forest_classifier" ||
-               name() == "decision_tree_classifier" ||
-               name() == "boosted_trees_classifier");
 
   // Class predictions
   gl_sframe sf_class;
-  sf_class.add_column(fast_predict(rows, "class", missing_value_action), "class");
+  sf_class.add_column(fast_predict(rows, missing_value_action, "class"),
+		      "class");
 
   // Binary classification
   if (variant_get_value<size_t>(state.at("num_classes")) == 2){
 
     // Convert P[X=1] to P[X = predicted_class]
-    gl_sarray pred_prob = fast_predict(rows, "probability");
+    gl_sarray pred_prob = fast_predict(rows, "error", "probability");
     auto transform_fn = [](const flexible_type& f)->flexible_type{
       if (f <= 0.5){
         return 1 - f;
@@ -596,7 +579,9 @@ gl_sframe supervised_learning_model_base::fast_classify(
 
   // Multi-class classification
   } else {
-    sf_class.add_column(fast_predict(rows, "max_probability", missing_value_action), "probability");
+    sf_class.add_column(fast_predict(rows, missing_value_action,
+				     "max_probability"),
+			"probability");
   }
   return sf_class;
 }
@@ -611,7 +596,7 @@ gl_sframe supervised_learning_model_base::fast_classify(
 sframe supervised_learning_model_base::predict_topk(
           const ml_data& test_data, const std::string& output_type,
           const size_t topk){
-  DASSERT_TRUE(name().find("classifier") != std::string::npos);
+  DASSERT_TRUE(is_classifier());
   size_t num_classes = variant_get_value<size_t>(state.at("num_classes"));
   size_t n_threads = turi::thread_pool::get_instance().size();
   size_t variables = 0;
@@ -663,12 +648,12 @@ sframe supervised_learning_model_base::predict_topk(
       // Dense predict.
       if (this->is_dense()) {
         fill_reference_encoding(*it, x);
-        x(variables-1) = 1;
+        x.coeffRef(variables-1) = 1;
 	      preds = predict_single_example(x, output_type_enum);
       // Sparse predict.
       } else {
         fill_reference_encoding(*it, x_sp);
-        x_sp.insert(variables-1, 1);
+        x_sp.coeffRef(variables-1) = 1;
 	      preds = predict_single_example(x_sp, output_type_enum);
       }
 
@@ -713,16 +698,12 @@ sframe supervised_learning_model_base::predict_topk(
  */
 std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
             const ml_data& test_data,
-            const std::string& evaluation_type){
+            const std::string& evaluation_type,
+            bool with_prediction){
 
   // Timers.
   timer t;
   double start_time = t.current_time();
-#ifdef HAS_DISTRIBUTED
-  auto dc = distributed_control_global::get_instance();
-  DASSERT_TRUE(dc != NULL);
-  logstream(LOG_INFO) << "Worker (" << dc->procid() << ") ";
-#endif
   logstream(LOG_INFO) << "Starting evaluation" << std::endl;
 
   // Variables needed.
@@ -795,12 +776,34 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
   for(size_t i=0; i < evaluators.size(); i++){
     evaluators[i]->init(n_threads);
   }
+  
+
+  std::shared_ptr<sarray<flexible_type>> prob_vectors = std::make_shared<sarray<flexible_type>>();
+  std::shared_ptr<sarray<flexible_type>> predicted_classes = std::make_shared<sarray<flexible_type>>();
+  
+  if (contains_prob_evaluator) {
+    // Save predictions as probability vectors  
+    prob_vectors->open_for_write(n_threads);
+    prob_vectors->set_type(flex_type_enum::VECTOR);
+
+    predicted_classes->open_for_write(n_threads);
+    predicted_classes->set_type((this->ml_mdata)->target_column_type());
+  }
 
   // Go through evaluators that require the predicted class.
   in_parallel([&](size_t thread_idx, size_t num_threads){
     flexible_type true_value, predicted_value, prob_vector;
     DenseVector x(variables);
     SparseVector x_sp(variables);
+    
+    sarray<flexible_type>::iterator writer_probs;
+    sarray<flexible_type>::iterator writer_classes;
+
+    if (contains_prob_evaluator) {
+      writer_probs = prob_vectors->get_output_iterator(thread_idx);
+      writer_classes = predicted_classes->get_output_iterator(thread_idx);
+    }
+
     for(auto it = test_data.get_iterator(thread_idx, num_threads);
                                                        !it.done(); ++it) {
       // Classifiers.
@@ -809,7 +812,7 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
         // Dense predict.
         if (is_dense) {
           fill_reference_encoding(*it, x);
-          x(variables-1) = 1;
+          x.coeffRef(variables-1) = 1;
 	        predicted_value = predict_single_example(x,
                                       prediction_type_enum::CLASS_INDEX);
           if (contains_prob_evaluator) {
@@ -819,7 +822,7 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
         // Sparse predict.
         } else {
           fill_reference_encoding(*it, x_sp);
-          x_sp.insert(variables-1, 1);
+          x_sp.coeffRef(variables-1) = 1;
 	        predicted_value = predict_single_example(x_sp,
                                       prediction_type_enum::CLASS_INDEX);
           if (contains_prob_evaluator) {
@@ -827,6 +830,21 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
                                  prediction_type_enum::PROBABILITY_VECTOR);
           }
         }
+        
+        if (contains_prob_evaluator) {
+          double max_prob = 0;
+          for(size_t i = 0; i < prob_vector.size(); i++){
+            if (max_prob < prob_vector[i]) {
+              max_prob = prob_vector[i];
+              predicted_value = i;
+            }
+          }
+          *writer_probs = prob_vector;
+          ++writer_probs;
+          *writer_classes = (this->ml_mdata)->target_indexer()->map_index_to_value(predicted_value);
+          ++writer_classes;
+        }
+
         true_value = it->target_index();
       // Regression.
       } else {
@@ -834,13 +852,13 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
         // Dense predict.
         if (is_dense) {
           fill_reference_encoding(*it, x);
-          x(variables-1) = 1;
+          x.coeffRef(variables-1) = 1;
 	        predicted_value = predict_single_example(x);
 
         // Sparse predict.
         } else {
           fill_reference_encoding(*it, x_sp);
-          x_sp.insert(variables-1, 1);
+          x_sp.coeffRef(variables-1) = 1;
 	        predicted_value = predict_single_example(x_sp);
         }
         true_value = it->target_value();
@@ -864,11 +882,10 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
     }
   });
 
-#ifdef HAS_DISTRIBUTED
-  logstream(LOG_INFO) << "Worker (" << dc->procid()
-            << ") Evaluation computation done at "
-            << (t.current_time() - start_time) << "s" << std::endl;
-#endif
+  if (contains_prob_evaluator) {
+    prob_vectors->close();
+    predicted_classes->close();
+  }
 
   // Get results
   std::map<std::string, variant_type> results;
@@ -876,14 +893,16 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
       results[evaluator_names[i]] = evaluators[i]->get_metric();
   }
 
-#ifdef HAS_DISTRIBUTED
-  logstream(LOG_INFO) << "Worker (" << dc->procid()
-            << ") Evaluation communication done at "
-            << (t.current_time() - start_time) << "s" << std::endl;
-#else
+  
+  if (contains_prob_evaluator && with_prediction) {
+    gl_sframe sf_predictions;
+    sf_predictions.add_column(prob_vectors, "probs");
+    sf_predictions.add_column(predicted_classes, "class");
+    results["predictions"] = sf_predictions;
+  }
+
   logstream(LOG_INFO) << "Evaluation done at "
             << (t.current_time() - start_time) << "s" << std::endl;
-#endif
 
   return results;
 }
@@ -895,12 +914,17 @@ std::map<std::string, variant_type> supervised_learning_model_base::evaluate(
  *
  */
 void supervised_learning_model_base::display_classifier_training_summary(
-                       std::string model_display_name) const {
+                       std::string model_display_name, bool simple_mode) const {
 
   size_t examples = num_examples();
   size_t classes =  variant_get_value<size_t>(state.at("num_classes"));
   size_t features = num_features();
   size_t unpacked_features = num_unpacked_features();
+  if(simple_mode) {
+    logprogress_stream << "Training a classifier on " << examples
+                       << " examples mapping to " << classes << " classes."
+                       << std::endl;
+  } else { 
 
   logprogress_stream << model_display_name << ":" << std::endl;
   logprogress_stream << "--------------------------------------------------------" << std::endl;
@@ -908,7 +932,7 @@ void supervised_learning_model_base::display_classifier_training_summary(
   logprogress_stream << "Number of classes           : " << classes << std::endl;
   logprogress_stream << "Number of feature columns   : " << features << std::endl;
   logprogress_stream << "Number of unpacked features : " << unpacked_features << std::endl;
-
+  }
 }
 
 /**
@@ -960,7 +984,8 @@ std::vector<std::vector<flexible_type>>
           }
           break; 
         }
-      case ml_column_mode::NUMERIC_VECTOR: {
+      case ml_column_mode::NUMERIC_VECTOR:
+      case ml_column_mode::NUMERIC_ND_VECTOR: {
         for(size_t i = 0; i < metadata->index_size(col_index); ++i) { 
           out[1] = i;
           ret[pos] = out;
@@ -980,81 +1005,268 @@ std::vector<std::vector<flexible_type>>
   return ret; 
 }
 
-/**
- * Compute the width of the data.
- *
- * \param[in] X  Input SFrame
- * \returns width
- *
- * The width is the same as the num_coefficients.
- *
- */
-size_t compute_data_width(sframe X){
-  ml_data data;
-  data.fill(X);
-  return get_number_of_coefficients(data.metadata());
-}
+void supervised_learning_model_base::api_train(
+    gl_sframe data, 
+    const std::string& target,
+    const variant_type& _validation_data,
+    const std::map<std::string, flexible_type>& _options) {
 
-/**
- * Rule based better than stupid model selector.
- */
-std::string _regression_model_selector(std::shared_ptr<unity_sframe> _X){
+  gl_sframe validation_data;
+  std::tie(data, validation_data) = create_validation_data(data, _validation_data);
 
-  sframe X = *(_X->get_underlying_sframe());
-  size_t data_width = compute_data_width(X);
-  if (data_width < WIDE_DATA){
-    return "boosted_trees_regression";
-  } else {
-    return "regression_linear_regression";
-  }
-}
+  gl_sframe f_data = data;
+  f_data.remove_column(target);
 
-/**
- * Rule based better than stupid model selector.
- */
-std::string _classifier_model_selector(std::shared_ptr<unity_sframe> _X){
+  // make a copy of options so we can remove "features"
+  std::map<std::string, flexible_type> options = _options;  
+  {
+    auto ft_it = options.find("features");
 
-  sframe X = *(_X->get_underlying_sframe());
+    if (ft_it != options.end()) {
+      flex_list _ft = ft_it->second.to<flex_list>();
+      std::vector<std::string> ftv(_ft.begin(), _ft.end());
+      if(ftv.size() == 0) {
+        log_and_throw("Empty feature set has been specified");
+      }
+      f_data = f_data.select_columns(ftv);
 
-  size_t data_width = compute_data_width(X);
-  if (data_width < WIDE_DATA){
-    return "boosted_trees_classifier";
-  } else {
-    return "classifier_logistic_regression";
-  }
-}
-
-/**
- * Rule based better than stupid model selector.
- */
-std::vector<std::string> _classifier_available_models(size_t num_classes,
-                                         std::shared_ptr<unity_sframe> _X){
-  sframe X = *(_X->get_underlying_sframe());
-
-  // Throw error if only one class.
-  // If number of classes more than 2, use boosted trees
-  if (num_classes == 1) {
-    log_and_throw("One-class classification is not currently supported. Please check your target column.");
-  } else if (num_classes > 2) {
-    return {"boosted_trees_classifier",
-            "random_forest_classifier",
-            "decision_tree_classifier",
-            "classifier_logistic_regression"};
-  } else {
-    size_t data_width = compute_data_width(X);
-    if (data_width < WIDE_DATA){
-      return {"boosted_trees_classifier",
-              "random_forest_classifier",
-              "decision_tree_classifier",
-              "classifier_svm",
-              "classifier_logistic_regression"};
-    } else {
-      return {"classifier_logistic_regression",
-              "classifier_svm"};
+      options.erase(ft_it);
     }
   }
 
-  return std::vector<std::string>();
+  sframe X = f_data.materialize_to_sframe(); 
+    
+  sframe y = data.select_columns({target}).materialize_to_sframe();
+    
+  check_target_column_type(this->name(), y);
+
+  ml_missing_value_action missing_value_action =
+    this->support_missing_value() ? ml_missing_value_action::USE_NAN
+                                  : ml_missing_value_action::ERROR;
+
+  sframe valid_X, valid_y; 
+
+  if(validation_data.num_columns() != 0) {
+
+    valid_X = validation_data.select_columns(f_data.column_names()).materialize_to_sframe();
+    
+    valid_y = validation_data.select_columns({target}).materialize_to_sframe();
+      
+    check_target_column_type(this->name(), valid_y);
+
+    auto valid_filter_names = f_data.column_names();
+    valid_filter_names.push_back(target);
+    validation_data = validation_data.select_columns(valid_filter_names);
+  }
+
+  // Add it to the state, even if it's empty.  
+  add_or_update_state({{"validation_data", validation_data}});
+
+  this->init(X, y, valid_X, valid_y, missing_value_action);
+
+  // Override any default options set by init above.
+  this->init_options(options);
+
+  this->train();
+
+  // Add in all the fields for the evaluation into the training statistics.
+  variant_map_type state_update;
+
+  {
+    auto ret = this->api_evaluate(data, "auto", "report");
+
+    for (auto& p : ret) {
+      state_update["training_" + p.first] = p.second;
+    }
+  }
+
+  if(validation_data.size() != 0) {
+    auto ret = this->api_evaluate(validation_data, "auto", "report");
+
+    for (auto& p : ret) {
+      state_update["validation_" + p.first] = p.second;
+    }
+  }
+
+  add_or_update_state(state_update); 
+}
+
+/**
+ * API interface through the unity server.
+ *
+ * Prediction stuff
+ */
+gl_sarray supervised_learning_model_base::api_predict(
+    gl_sframe data, std::string missing_value_action_str,
+    std::string output_type) {
+
+  ml_missing_value_action missing_value_action =
+      get_missing_value_enum_from_string(missing_value_action_str);
+
+  sframe X = setup_test_data_sframe(
+      data.materialize_to_sframe(),
+      std::dynamic_pointer_cast<supervised_learning_model_base>(shared_from_this()),
+      missing_value_action);
+
+  ml_data m_data = this->construct_ml_data_using_current_metadata(X, missing_value_action);
+  
+  return gl_sarray(this->predict(m_data, output_type));
+}
+
+/**
+ * API interface through the unity server.
+ *
+ * Multiclass prediction stuff
+ */
+gl_sframe supervised_learning_model_base::api_predict_topk(
+    gl_sframe data, std::string missing_value_action_str,
+    std::string output_type, size_t topk) {
+  if (topk == 0) log_and_throw("The parameter 'k' must be positive.");
+
+  ml_missing_value_action missing_value_action =
+      get_missing_value_enum_from_string(missing_value_action_str);
+
+  sframe X = setup_test_data_sframe(
+      data.materialize_to_sframe(),
+      std::dynamic_pointer_cast<supervised_learning_model_base>(
+          shared_from_this()),
+      missing_value_action);
+
+  ml_data m_data =
+      this->construct_ml_data_using_current_metadata(X, missing_value_action);
+
+  return gl_sframe(this->predict_topk(m_data, output_type, topk));
+}
+
+/**
+ * API interface through the unity server.
+ *
+ *  Classification stuff
+ */
+gl_sframe supervised_learning_model_base::api_classify(
+    gl_sframe data, std::string missing_value_action_str,
+    std::string output_type) {
+
+  ml_missing_value_action missing_value_action =
+      get_missing_value_enum_from_string(missing_value_action_str);
+
+  sframe X = setup_test_data_sframe(
+      data.materialize_to_sframe(),
+      std::dynamic_pointer_cast<supervised_learning_model_base>(
+          shared_from_this()),
+      missing_value_action);
+
+  ml_data m_data = this->construct_ml_data_using_current_metadata(
+      X, missing_value_action);
+
+  return gl_sframe(this->classify(m_data, output_type));
+}
+
+/**
+ *  API interface through the unity server.
+ *
+ *  Evaluate the model
+ */
+variant_map_type supervised_learning_model_base::api_evaluate(
+    gl_sframe data, std::string missing_value_action_str, std::string metric,
+    gl_sarray predictions, bool with_prediction) {
+
+  auto model = std::dynamic_pointer_cast<supervised_learning_model_base>(
+      shared_from_this());
+  ml_missing_value_action missing_value_action =
+      get_missing_value_enum_from_string(missing_value_action_str);
+
+  sframe test_data = data.materialize_to_sframe();
+  sframe X = setup_test_data_sframe(test_data, model, missing_value_action);
+  sframe y = test_data.select_columns({get_target_name()});
+  ml_data m_data = setup_ml_data_for_evaluation(
+      X, y, model, missing_value_action);
+
+
+  if(metric == "report") {
+    if(is_classifier()) {
+      std::string target = "class"; 
+      std::string pred_column = "predicted_class";
+
+
+      gl_sframe out;
+
+      out["class"] = data[variant_get_ref<flexible_type>(state.at("target")).get<flex_string>()];
+      if(predictions.empty()) {
+        out[pred_column] = api_predict(data, missing_value_action_str, "class");
+      } else {
+        out[pred_column] = predictions;
+      }
+
+      variant_map_type ret = evaluate(m_data, "auto", with_prediction);
+
+      ret["confusion_matrix"] = confusion_matrix(out, target, pred_column);
+      ret["report_by_class"] = classifier_report_by_class(out, target, pred_column);
+      ret["accuracy"] =
+          double((out["class"] == out[pred_column]).sum()) / out.size();
+
+      return ret;
+
+    } else {
+      metric = "auto";
+    }
+  }
+
+  variant_map_type results = evaluate(m_data, metric, with_prediction);
+  return results;
+}
+
+/**
+ *  API interface through the unity server.
+ *
+ *  Extract features!
+ */
+gl_sarray supervised_learning_model_base::api_extract_features(
+    gl_sframe data, std::string missing_value_action_str) {
+  auto model = std::dynamic_pointer_cast<supervised_learning_model_base>(
+      shared_from_this());
+  ml_missing_value_action missing_value_action =
+      get_missing_value_enum_from_string(missing_value_action_str);
+
+  sframe test_data = data.materialize_to_sframe();
+  sframe X = setup_test_data_sframe(test_data, model, missing_value_action);
+
+  return extract_features(X, missing_value_action);
+}
+
+std::shared_ptr<coreml::MLModelWrapper>
+supervised_learning_model_base::api_export_to_coreml(
+    const std::string& filename) {
+  std::shared_ptr<coreml::MLModelWrapper> model = export_to_coreml();
+
+  if (filename != "") {
+    model->save(filename);
+  }
+
+  return model;
+}
+
+/**
+ * Get the missing value enum from the string.
+ *
+ * [in] Missing value action as seen by the user.
+ * \returns Missing value action enum
+ */
+ml_missing_value_action
+supervised_learning_model_base::get_missing_value_enum_from_string(
+    const std::string& missing_value_str) const {
+  if (missing_value_str == "auto" || missing_value_str.empty()) {
+    return support_missing_value() ? ml_missing_value_action::USE_NAN
+                                   : ml_missing_value_action::IMPUTE;
+  } else if (missing_value_str == "error") {
+    return ml_missing_value_action::ERROR;
+  } else if (missing_value_str == "impute") {
+    return ml_missing_value_action::IMPUTE;
+  } else if (missing_value_str == "none") {
+    return ml_missing_value_action::USE_NAN;
+  } else {
+    log_and_throw("Missing value type '" + missing_value_str + "' not supported.");
+  }
 }
 
 /**
@@ -1063,9 +1275,9 @@ std::vector<std::string> _classifier_available_models(size_t num_classes,
 gl_sarray _fast_predict(
     std::shared_ptr<supervised_learning_model_base> model,
     const std::vector<flexible_type>& rows,
-    const std::string& output_type,
-    const std::string& missing_value_action) {
-  return model->fast_predict(rows, output_type, missing_value_action);
+    const std::string& missing_value_action,
+    const std::string& output_type) {
+  return model->fast_predict(rows, missing_value_action, output_type);
 }
 
 /**
@@ -1074,10 +1286,11 @@ gl_sarray _fast_predict(
 gl_sframe _fast_predict_topk(
     std::shared_ptr<supervised_learning_model_base> model,
     const std::vector<flexible_type>& rows,
-    const std::string& output_type,
     const std::string& missing_value_action,
+    const std::string& output_type,
     const size_t topk) {
-  return model->fast_predict_topk(rows, output_type, missing_value_action, topk);
+  return model->fast_predict_topk(rows, missing_value_action, output_type,
+				  topk);
 }
 
 /**
@@ -1097,6 +1310,7 @@ std::vector<std::vector<flexible_type>> _get_metadata_mapping(
     std::shared_ptr<supervised_learning_model_base> model) {
   return model->get_metadata_mapping();
 }
+
 
 } // supervised_learning
 } // turicreate

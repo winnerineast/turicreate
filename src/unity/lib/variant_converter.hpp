@@ -171,7 +171,7 @@ struct variant_converter<T,
       std::string errormsg = 
           std::string("Expecting a flexible_type. Got a ") + 
           get_variant_which_name(val.which());
-      throw(errormsg);
+      std_log_and_throw(std::invalid_argument, errormsg);
     }
     return flexible_type_converter<T>().get(f);
   }
@@ -395,8 +395,10 @@ struct variant_converter<std::pair<S, T>,
   std::pair<S, T> get(const variant_type& val) {
     std::vector<variant_type> ret = 
         variant_converter<std::vector<variant_type>>().get(val);
-    ASSERT_MSG(ret.size() == 2,
+    if (ret.size() != 2) {
+      std_log_and_throw(std::invalid_argument,
                "Expecting an array of length 2");
+    }
     return {variant_converter<S>().get(ret[0]), 
             variant_converter<T>().get(ret[1])};
   }
@@ -447,11 +449,11 @@ namespace variant_converter_impl {
 template <typename TupleType>
 struct fill_tuple {
   const std::vector<variant_type>* input;
-  mutable TupleType tuple;
+  mutable TupleType* tuple;
   template<int n>
   void operator()(boost::mpl::integral_c<int, n> t) const { 
-    typedef typename std::decay<decltype(std::get<n>(tuple))>::type TargetType;
-    std::get<n>(tuple) = variant_converter<TargetType>().get(input->at(n));
+    typedef typename std::decay<decltype(std::get<n>(*tuple))>::type TargetType;
+    std::get<n>(*tuple) = variant_converter<TargetType>().get(input->at(n));
   }
 };
 
@@ -459,11 +461,11 @@ struct fill_tuple {
 template <typename TupleType>
 struct fill_variant{
   const TupleType* input;
-  mutable std::vector<variant_type> output;
+  mutable std::vector<variant_type>* output;
   template<int n>
   void operator()(boost::mpl::integral_c<int, n> t) const { 
     typedef typename std::decay<decltype(std::get<n>(*input))>::type TargetType;
-    output.at(n) = variant_converter<TargetType>().set(std::get<n>(*input));
+    output->at(n) = variant_converter<TargetType>().set(std::get<n>(*input));
   }
 };
 
@@ -490,23 +492,28 @@ struct variant_converter<std::tuple<Args...>,
     std::vector<variant_type> cv = 
         variant_converter<std::vector<variant_type>>().get(val);
     if (cv.size() != sizeof...(Args)) {
-      std::string error_msg = "Expecting an array of length " + std::to_string(sizeof...(Args));
-      ASSERT_MSG(cv.size() == sizeof...(Args), error_msg.c_str());
+      std::string error_msg =
+          "Expecting an array of length " + std::to_string(sizeof...(Args));
+      std_log_and_throw(std::invalid_argument, error_msg);
     }
 
     typename boost::mpl::range_c<int, 0, sizeof...(Args)>::type tuple_range;
     variant_converter_impl::fill_tuple<std::tuple<Args...>> filler;
+    std::tuple<Args...> output;
     filler.input = &cv;
+    filler.tuple = &output;
     boost::fusion::for_each(tuple_range, filler);
-    return filler.tuple;
+    return output;
   }
   variant_type set(const std::tuple<Args...> & val) {
     typename boost::mpl::range_c<int, 0, sizeof...(Args)>::type tuple_range;
     variant_converter_impl::fill_variant<std::tuple<Args...>> filler;
+    std::vector<variant_type> output;
     filler.input = &val;
-    filler.output.resize(sizeof...(Args));
+    filler.output = &output;
+    output.resize(sizeof...(Args));
     boost::fusion::for_each(tuple_range, filler);
-    return filler.output;
+    return output;
   }
 };
 
@@ -531,13 +538,15 @@ struct variant_converter<std::function<S(Args...)>,
       typename boost::mpl::range_c<int, 0, sizeof...(Args)>::type tuple_range;
       variant_converter_impl::fill_variant<std::tuple<Args...>> filler;
       filler.input = &val;
-      filler.output.resize(sizeof...(Args));
+      filler.output->resize(sizeof...(Args));
       boost::fusion::for_each(tuple_range, filler);
-      return variant_converter<S>().get(native_execute_function(filler.output));
+      return variant_converter<S>().get(native_execute_function(*(filler.output)));
     };
   }
   variant_type set(const std::function<S(Args...)>& val) {
-    throw("Cannot convert function to variant");
+    std_log_and_throw(std::invalid_argument,
+                      "Cannot convert function to variant");
+    ASSERT_UNREACHABLE();
   }
 };
 

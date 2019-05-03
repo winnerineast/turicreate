@@ -6,7 +6,8 @@
 #ifndef TURI_BOOSTED_TREES_H_
 #define TURI_BOOSTED_TREES_H_
 // unity xgboost
-#include <toolkits/supervised_learning/xgboost.hpp>
+#include <unity/toolkits/supervised_learning/xgboost.hpp>
+#include <unity/toolkits/coreml_export/mlmodel_wrapper.hpp>
 
 #include <export.hpp>
 
@@ -23,11 +24,6 @@ class EXPORT boosted_trees_regression: public xgboost_model {
   public:
   
   /**
-   * Returns the name of the model.
-   */
-  std::string name(void) override;
-
-  /**
    * Set one of the options in the algorithm.
    *
    * This values is checked	against the requirements given by the option
@@ -37,25 +33,29 @@ class EXPORT boosted_trees_regression: public xgboost_model {
    */
   void init_options(const std::map<std::string,flexible_type>& _opts) override; 
 
+  bool is_classifier() const override { return false; }
+
   /** 
    * Configure booster from options 
    */
   void configure(void) override;
-};
 
+  std::shared_ptr<coreml::MLModelWrapper> export_to_coreml() override;
+
+
+  BEGIN_CLASS_MEMBER_REGISTRATION("boosted_trees_regression");
+  IMPORT_BASE_CLASS_REGISTRATION(supervised_learning_model_base);
+  END_CLASS_MEMBER_REGISTRATION
+
+};
 
 /**It can also be used to predict the class of
  * Boosted trees classifier.
  *
  */
-class EXPORT boosted_trees_classifier: public xgboost_model {  
+class EXPORT boosted_trees_classifier : public xgboost_model {  
   
   public:
-  
-  /**
-   * Returns the name of the model.
-   */
-  std::string name(void) override;
   
   /**
    * Initialize things that are specific to your model.
@@ -76,6 +76,8 @@ class EXPORT boosted_trees_classifier: public xgboost_model {
    */
   void init_options(const std::map<std::string, flexible_type>& _opts) override;
  
+  bool is_classifier() const override { return true; }
+
   /** 
    * Configure booster from options 
    */
@@ -84,7 +86,7 @@ class EXPORT boosted_trees_classifier: public xgboost_model {
   /**
    * Set the default evaluation metric during model evaluation..
    */
-  void set_default_evaluation_metric(){
+  void set_default_evaluation_metric() override {
     set_evaluation_metric({
         "accuracy", 
         "auc", 
@@ -100,15 +102,19 @@ class EXPORT boosted_trees_classifier: public xgboost_model {
   /**
    * Set the default evaluation metric for progress tracking.
    */
-  void set_default_tracking_metric(){
+  void set_default_tracking_metric() override {
     set_tracking_metric({
         "accuracy", "log_loss"
        });
   }
+ 
+  std::shared_ptr<coreml::MLModelWrapper> export_to_coreml() override;
 
+  BEGIN_CLASS_MEMBER_REGISTRATION("boosted_trees_classifier");
+  IMPORT_BASE_CLASS_REGISTRATION(supervised_learning_model_base);
+  END_CLASS_MEMBER_REGISTRATION
 
 };
-
 
 }  // namespace xgboost
 }  // namespace supervised

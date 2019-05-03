@@ -17,8 +17,8 @@
 #include <unity/lib/gl_sframe.hpp>
 #include <unity/lib/gl_sarray.hpp>
 #include <unity/lib/toolkit_class_macros.hpp>
+#include <unity/lib/extensions/ml_model.hpp>
 
-#include <unity/toolkits/ml_model/sdk_model.hpp>
 #include <unity/toolkits/pattern_mining/fp_tree.hpp>
 #include <unity/toolkits/pattern_mining/fp_results_tree.hpp>
 #include <unity/toolkits/feature_engineering/topk_indexer.hpp>
@@ -33,7 +33,7 @@ namespace pattern_mining {
  * TODO: Add some comments hare about what the base class is supposed to be.
  *
  */
-class EXPORT fp_growth : public sdk_model::sdk_model_base {
+class EXPORT fp_growth : public ml_model_base {
 
   static constexpr size_t FP_GROWTH_VERSION = 0;
 
@@ -117,19 +117,19 @@ class EXPORT fp_growth : public sdk_model::sdk_model_base {
   /**
    * Returns the current model version
    */
-  size_t get_version() const;
+  size_t get_version() const override;
 
   /**
    * Serializes the model. Must save the model to the file format version
    * matching that of get_version()
    */
-  void save_impl(oarchive& oarc) const;
+  void save_impl(oarchive& oarc) const override;
 
   /**
    * Loads a model previously saved at a particular version number.
    * Should raise an exception on failure.
    */
-  void load_version(iarchive& iarc, size_t version);
+  void load_version(iarchive& iarc, size_t version) override;
 
   /**
    * Set one of the options in the algorithm. Use the option manager to set
@@ -138,7 +138,7 @@ class EXPORT fp_growth : public sdk_model::sdk_model_base {
    *
    * \param[in] options Options to set
    */
-  void init_options(const std::map<std::string,flexible_type>& _options);
+  void init_options(const std::map<std::string,flexible_type>& _options) override;
 
   /**
    * Get frequent itemsets using the FP-Growth algorithm.

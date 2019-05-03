@@ -19,14 +19,14 @@ from turicreate.toolkits._internal_utils import _toolkit_repr_print, \
 import turicreate.aggregate as _Aggregate
 from turicreate.data_structures.sarray import SArray as _SArray
 from turicreate.data_structures.sframe import SFrame as _SFrame
-from turicreate.deps import numpy as _numpy, HAS_NUMPY as _HAS_NUMPY
+from turicreate._deps import numpy as _numpy, HAS_NUMPY as _HAS_NUMPY
 
 def _create(observation_data,
            user_id='user_id', item_id='item_id', target=None,
            user_data=None, item_data=None,
            ranking=True,
            verbose=True):
-    r"""
+    """
     A unified interface for training recommender models. Based on simple
     characteristics of the data, a type of model is selected and trained. The
     trained model can be used to predict ratings and make recommendations.
@@ -174,182 +174,6 @@ def _create(observation_data,
     else:
         raise RuntimeError("Provided method not recognized.")
 
-
-def __plot_histogram(measurements, means, names=None, metric_name=None):
-    """
-    Plot histograms of the measurements, overlaid with vertical lines
-    representing the means of the measurements.
-
-    Parameters
-    ----------
-    measurements : list
-        List of measurements (recall, precision or RMSE).
-
-    means : list
-        List of doubles, intended to be the mean of each list in
-        'measurements'.
-
-    names : list
-        List of model name strings.
-
-    metric_name : string
-        Name of the metric.
-    """
-    num_measurements = len(measurements)
-
-    # A list of colors for plotting
-    COLORS_LIST = ['b', 'g', 'r', 'k', 'm', 'c']
-    colors = [COLORS_LIST[i % len(COLORS_LIST)] for i in range(num_measurements)]
-
-    hist_handle = _pp.hist(measurements, bins=20,
-                           color=colors,
-                           label=names, hold=True)
-    _pp.legend()
-    # hist() returns a list of two lists, the first is a list of all the counts,
-    # the second is a list of the bin centers.  We need the maximum count so we know
-    # how tall the vertical line should be.  So we take the max of the max of the
-    # first list of lists
-    max_count = max([max(hcount) for hcount in hist_handle[0]])
-    _pp.vlines(means, 0, max_count, colors=colors)
-    _pp.xlabel(metric_name)
-    _pp.ylabel('Counts')
-
-
-def __plot_overlap_hists(results, label, names, bins=20, alpha=0.3):
-    """
-    Plot overlapping (un-normalized) histograms for a list of one-dimensional
-    series.
-
-    Parameters
-    ----------
-    results : list
-        List of list-like objects. Each element is plotted as a separate histogram.
-
-    label : string
-        Label for the x-axis of the histogram.
-
-    names : list
-        Names for each series in `results'.
-
-    bins : int
-        Number of bins. Default is 20.
-
-    alpha : float
-        Opacity of the histogram patches. Default is 0.4.
-    """
-    assert _HAS_NUMPY, 'Cannot find numpy'
-    fig, ax = _pp.subplots()
-
-    # plot first series to fix the bins
-    counts, bins, patches = ax.hist(results[0], bins=bins, alpha=alpha, lw=0.1,
-                                    label=names[0])
-    clr = patches[0].get_facecolor()
-    counts = _numpy.insert(counts, 0, 0)
-    ax.step(bins, counts, color=clr, lw=5)
-
-    # plot the rest of the series
-    if len(results) > 1:
-        for series, name in zip(results[1:], names[1:]):
-            counts, bins, patches = ax.hist(series, bins=bins, alpha=alpha, lw=0.03,
-                                            label=name, fill=True)
-            clr = patches[0].get_facecolor()
-            counts = _numpy.insert(counts, 0, 0)
-            ax.step(bins, counts, color=clr, lw=4)
-
-    ax.ticklabel_format(style='sci', scilimits=(0, 0), axis='y')
-    ax.set_xlabel(label)
-    ax.set_ylabel('Frequency')
-    ax.legend()
-    fig.show()
-
-
-def _compare_results_precision_recall(results, model_names=None):
-    """
-    Compare models that output precision/recall. Display the per-user
-    precision/recall scatter plot, the histograms of precision, and the
-    histograms of recall.
-
-    Parameters
-    ----------
-    results : list
-        List of SFrames. Each SFrame describes the evaluation results for a
-        separate model.
-
-    model_names : list
-        List of model name strings.
-    """
-
-    num_models = len(results)
-    COLORS_LIST = ['b', 'g', 'r', 'k', 'm', 'c']
-
-    if num_models < 1:
-        return
-
-    if model_names is None:
-        model_names = ["model {}".format(i) for i in range(num_models)]
-
-    pr_curves_by_model = [res['precision_recall_overall'] for res in results]
-    fig, ax = _pp.subplots()
-
-    for i in range(num_models):
-        pr_curve = pr_curves_by_model[i]
-        pr_curve = pr_curve.sort('recall')
-        name = 'Model ' + str(i + 1)
-        if model_names is not None:
-            name = model_names[i]
-
-        ax.plot(list(pr_curve['recall']), list(pr_curve['precision']),
-                COLORS_LIST[i % len(COLORS_LIST)], label=name)
-
-    ax.set_title('Precision-Recall Averaged Over Users')
-    ax.set_xlabel('Recall')
-    ax.set_ylabel('Precision')
-    ax.legend()
-    fig.show()
-
-
-def _compare_results_rmse2(results, model_names=None):
-    """
-    Compare models that output root-mean-squared error (RMSE).
-
-    Parameters
-    ----------
-    results : list
-        List of dataframes describing evaluation results for each model.
-
-    model_names : list
-        List of model name strings.
-    """
-    assert _HAS_NUMPY, 'Cannot find numpy'
-    ## Validate the results
-    num_models = len(results)
-
-    if num_models < 1 or num_models > len(_rcParams['axes.color_cycle']):
-        return
-
-    if model_names is None:
-        model_names = ["model {}".format(i) for i in range(num_models)]
-
-    ## Histograms of per-user and per-item RMSE
-    user_rmse_by_model = [list(elem['rmse_by_user']['rmse']) for elem in results]
-    __plot_overlap_hists(user_rmse_by_model, 'Per-User RMSE', model_names, bins=100)
-
-    item_rmse_by_model = [list(elem['rmse_by_item']['rmse']) for elem in results]
-    __plot_overlap_hists(item_rmse_by_model, 'Per-Item RMSE', model_names, bins=100)
-
-    ## Bar chart of Overall RMSE by model
-    overall_rmse_by_model = [elem['rmse_overall'] for elem in results]
-
-    fig, ax = _pp.subplots()
-    BAR_WIDTH = 0.3
-    centers = _numpy.arange(num_models) + BAR_WIDTH
-    ax.bar(centers, overall_rmse_by_model, BAR_WIDTH)
-    ax.set_xticks(centers + BAR_WIDTH / 2)
-    ax.set_xticklabels(model_names)
-    ax.set_title('Overall RMSE')
-    fig.show()
-
-
 def compare_models(dataset, models, model_names=None, user_sample=1.0,
                    metric='auto',
                    target=None,
@@ -454,6 +278,7 @@ def compare_models(dataset, models, model_names=None, user_sample=1.0,
     >>> turicreate.recommender.util.compare_models(test_data2, [m1, m2, m3, m4],
     ...                                          metric='precision_recall')
     """
+
     num_models = len(models)
 
     if model_names is None:
@@ -568,6 +393,7 @@ def precision_recall_by_user(observed_user_items,
     >>> recs = m.recommend()
     >>> precision_recall_by_user(test_data, recs, cutoffs=[5, 10])
     """
+
     assert type(observed_user_items) == _SFrame
     assert type(recommendations) == _SFrame
     assert type(cutoffs) == list
@@ -674,9 +500,11 @@ def random_split_by_user(dataset,
             'item_test_proportion': item_test_proportion,
             'random_seed': random_seed}
 
-    response = _turicreate.toolkits._main.run('recsys_train_test_split', opts)
-    train = _SFrame(None, _proxy=response['train'])
-    test = _SFrame(None, _proxy=response['test'])
+    response = _turicreate.extensions._recsys.train_test_split(dataset, user_id, item_id, 
+        max_num_users, item_test_proportion, random_seed)
+
+    train = response['train']
+    test = response['test']
     return train, test
 
 
@@ -723,8 +551,7 @@ class _Recommender(_Model):
             A list of fields that can be queried using the ``get`` method.
         """
 
-        opts = {'model': self.__proxy__}
-        response = _turicreate.toolkits._main.run('recsys_list_fields', opts)
+        response = self.__proxy__.list_fields()
         return [s for s in response['value'] if not s.startswith("_")]
 
     def _get(self, field):
@@ -744,28 +571,16 @@ class _Recommender(_Model):
         Examples
         --------
         >>> data = turicreate.SFrame({'user_id': ["0", "0", "0", "1", "1", "2", "2", "2"],
-        ...                         'item_id': ["a", "b", "c", "a", "b", "b", "c", "d"],
-        ...                         'rating': [1, 3, 2, 5, 4, 1, 4, 3]})
-        >>> from turicreate.recommender
-        >>> m = factorization_recommender.create(data, "user_id", "item_id", "rating")
-        >>> d = m.get("coefficients")
+                                      'item_id': ["a", "b", "c", "a", "b", "b", "c", "d"],
+                                      'rating': [1, 3, 2, 5, 4, 1, 4, 3]})
+        >>> m = turicreate.factorization_recommender.create(data, "user_id", "item_id", "rating")
+        >>> d = m._get("coefficients")
         >>> U1 = d['user_id']
-        >>> U2 = d['movie_id']
+        >>> U2 = d['item_id']
         """
-        opts = {'model': self.__proxy__, 'field': field}
-        response = _turicreate.toolkits._main.run('recsys_get_value', opts)
 
-        def type_tr(v):
-            if type(v) is dict:
-                return dict( (k, type_tr(v)) for k, v in _six.iteritems(v))
-
-            elif isinstance(v, _turicreate.cython.cy_sframe.UnitySFrameProxy):
-                return _SFrame(None, _proxy=v)
-
-            else:
-                return v
-
-        return type_tr(response["value"])
+        response = self.__proxy__.get_value(field)
+        return response
 
     def get_num_items_per_user(self):
         """
@@ -781,9 +596,9 @@ class _Recommender(_Model):
         --------
 
         """
-        opts = {'model': self.__proxy__}
-        response = _turicreate.toolkits._main.run('recsys_get_num_items_per_user', opts)
-        return _SFrame(None, _proxy=response['data'])
+
+        response = self.__proxy__.get_num_items_per_user()
+        return response
 
     def get_num_users_per_item(self):
         """
@@ -799,9 +614,9 @@ class _Recommender(_Model):
         --------
 
         """
-        opts = {'model': self.__proxy__}
-        response = _turicreate.toolkits._main.run('recsys_get_num_users_per_item', opts)
-        return _SFrame(None, _proxy=response['data'])
+
+        response = self.__proxy__.get_num_users_per_item()
+        return response
 
 
     def __str__(self):
@@ -813,6 +628,7 @@ class _Recommender(_Model):
         out : string
             The type of model.
         """
+
         return self.__class__.__name__
 
     def _get_summary_struct(self):
@@ -844,13 +660,6 @@ class _Recommender(_Model):
                           self.item_id,
                           self.target])
         num_obs_fields = len(observation_columns.difference(not_needed))
-
-        num_user_features = 0
-        if 'user_side_data_column_names' in stats:
-            num_user_features = len(self.user_side_data_column_names)
-        num_item_features = 0
-        if 'item_side_data_column_names' in stats:
-            num_item_features = len(self.item_side_data_column_names)
 
         user_features = self.user_side_data_column_names
         item_features = self.item_side_data_column_names
@@ -983,13 +792,13 @@ class _Recommender(_Model):
         out : string
             A description of the model.
         """
-        (sections, section_titles) = self._get_summary_struct()
 
+        (sections, section_titles) = self._get_summary_struct()
         return _toolkit_repr_print(self, sections, section_titles, width=32)
 
     def _get_current_options(self):
-        opts = {'model': self.__proxy__}
-        response = _turicreate.toolkits._main.run('recsys_get_current_options', opts)
+
+        response = self.__proxy__.get_current_options()
         return response
 
     def _set_current_options(self, options):
@@ -1002,10 +811,10 @@ class _Recommender(_Model):
             A dictionary of the desired option settings. The key should be the name
             of the option and each value is the desired value of the option.
         """
+
         opts = self._get_current_options()
         opts.update(options)
-        opts['model'] = self.__proxy__
-        response = _turicreate.toolkits._main.run('recsys_set_current_options', opts)
+        response = self.__proxy__.set_current_options(opts)
         return response
 
     def __prepare_dataset_parameter(self, dataset):
@@ -1040,11 +849,9 @@ class _Recommender(_Model):
         """
 
         if not hasattr(self, "_data_schema"):
+            response = self.__proxy__.get_data_schema()
 
-            opts = {'model': self.__proxy__}
-            response = _turicreate.toolkits._main.run('recsys_get_data_schema', opts)
-
-            self._data_schema = {k : _turicreate.cython.cy_flexible_type.pytype_from_type_name(v)
+            self._data_schema = {k : _turicreate._cython.cy_flexible_type.pytype_from_type_name(v)
                                  for k, v in response["schema"].items()}
 
         return self._data_schema
@@ -1093,6 +900,7 @@ class _Recommender(_Model):
         --------
         recommend, evaluate
         """
+
         if new_observation_data is None:
             new_observation_data = _SFrame()
         if new_user_data is None:
@@ -1112,19 +920,9 @@ class _Recommender(_Model):
         check_type(new_observation_data, "new_observation_data", _SFrame, ["SFrame"])
         check_type(new_user_data, "new_user_data", _SFrame, ["SFrame"])
         check_type(new_item_data, "new_item_data", _SFrame, ["SFrame"])
-
-        # Get metadata from C++ object
-        opts = {'data_to_predict': dataset,
-                'model': self.__proxy__,
-               'new_data': new_observation_data,
-               'new_user_data': new_user_data,
-               'new_item_data': new_item_data
-                }
-
-        # Call the C++ function for recommender_model
-        response = _turicreate.toolkits._main.run('recsys_predict', opts)
-        result = _SFrame(None, _proxy=response['data'])
-        return result['prediction']
+        
+        response = self.__proxy__.predict(dataset, new_user_data, new_item_data)
+        return response['prediction']
 
     def get_similar_items(self, items=None, k=10, verbose=False):
         """
@@ -1187,17 +985,7 @@ class _Recommender(_Model):
         check_type(items, "items", _SArray, ["SArray", "list"])
         check_type(k, "k", int, ["int"])
 
-        opt = {'model': self.__proxy__,
-               'items': items,
-               'get_all_items' : get_all_items,
-               'k': k,
-               'verbose': verbose}
-
-        response = _turicreate.toolkits._main.run('recsys_get_similar_items', opt)
-
-        neighbors = _SFrame(None, _proxy=response['data'])
-
-        return neighbors
+        return self.__proxy__.get_similar_items(items, k, verbose, get_all_items)
 
     def get_similar_users(self, users=None, k=10):
         """Get the k most similar users for each entry in `users`.
@@ -1261,11 +1049,8 @@ class _Recommender(_Model):
                'get_all_users' : get_all_users,
                'k': k}
 
-        response = _turicreate.toolkits._main.run('recsys_get_similar_users', opt)
-
-        neighbors = _SFrame(None, _proxy=response['data'])
-
-        return neighbors
+        response = self.__proxy__.get_similar_users(users, k, get_all_users)
+        return response
 
 
     def recommend(self, users=None, k=10, exclude=None, items=None,
@@ -1379,6 +1164,8 @@ class _Recommender(_Model):
         predict
         evaluate
         """
+        from turicreate._cython.cy_server import QuietProgress
+
         assert type(k) == int
 
         column_types = self._get_data_schema()
@@ -1473,9 +1260,14 @@ class _Recommender(_Model):
                 assert new_observation_data.num_rows() != 0
                 original_user_type = user_column.dtype
                 users[user_id] = user_column.astype(str)
+                user_type=str
 
             elif user_column.dtype != user_type:
                 users[user_id] = user_column.astype(user_type)
+
+        # Cast user specified in exclude to the appropriate type if necessary.
+        if user_id in exclude.column_names() and exclude[user_id].dtype!=user_type:
+                exclude[user_id] = exclude[user_id].astype(user_type)
 
         try:
             diversity = float(diversity)
@@ -1505,8 +1297,10 @@ class _Recommender(_Model):
                'diversity' : diversity,
                'random_seed' : random_seed
                }
-        response = _turicreate.toolkits._main.run('recsys_recommend', opt, verbose=verbose)
-        recs = _SFrame(None, _proxy=response['data'])
+
+        with QuietProgress(verbose):
+            recs = self.__proxy__.recommend(users, exclude, items, new_observation_data, new_user_data, 
+                new_item_data, exclude_known, k, diversity, random_seed)
 
         if cast_user_to_string_type:
             recs[user_id] = recs[user_id].astype(original_user_type)
@@ -1690,9 +1484,9 @@ class _Recommender(_Model):
             Statistics about model training, e.g. runtime.
 
         """
+
         _logging.warning("This method will be deprecated soon. Please use m.summary().")
-        opts = {'model': self.__proxy__}
-        response = _turicreate.toolkits._main.run("recsys_get_train_stats", opts)
+        response = self.__proxy__.get_train_stats()
         return response
 
     def evaluate_precision_recall(self, dataset, cutoffs=list(range(1,11,1))+list(range(11,50,5)),
@@ -1765,7 +1559,7 @@ class _Recommender(_Model):
                               verbose=verbose,
                               **kwargs)
 
-        precision_recall_by_user = _turicreate.recommender.util.precision_recall_by_user(dataset, recs, cutoffs)
+        precision_recall_by_user = self.__proxy__.precision_recall_by_user(dataset, recs, cutoffs)
 
         ret = {'precision_recall_by_user': precision_recall_by_user}
 
@@ -1973,13 +1767,9 @@ class _Recommender(_Model):
         trained with.  Can be used for comparison purposes.
         """
 
-        opts = {'model': self.__proxy__}
-        response = _turicreate.toolkits._main.run('recsys_get_popularity_baseline', opts)
-
-
+        response = self.__proxy__.get_popularity_baseline()
         from .popularity_recommender import PopularityRecommender
-
-        return PopularityRecommender(response["popularity_model"])
+        return PopularityRecommender(response)
 
     def _get_item_intersection_info(self, item_pairs):
         """
@@ -2014,10 +1804,27 @@ class _Recommender(_Model):
         if not isinstance(item_pairs, _turicreate.SFrame):
             raise TypeError("item_pairs must be 2-column SFrame of two item "
                             "columns, or a list of (item_1, item_2) tuples. ")
+        
+        response = self.__proxy__.get_item_intersection_info(item_pairs)
+        return response
 
+    def export_coreml(self, filename):
+        """
+        Export the model in Core ML format.
 
-        opts = {'model': self.__proxy__,
-                'item_pairs' : item_pairs}
+        Parameters
+        ----------
+        filename: str
+          A valid filename where the model can be saved.
 
-        response = _turicreate.toolkits._main.run('recsys_get_item_intersection_info', opts)
-        return _SFrame(None, _proxy=response['item_intersections'])
+        Examples
+        --------
+        >>> model.export_coreml('myModel.mlmodel')
+        """
+        print('This model is exported as a custom Core ML model. In order to use it in your\n'
+              'application, you must also include "libRecommender.dylib". For additional\n'
+              'details see:\n'
+              'https://apple.github.io/turicreate/docs/userguide/recommender/coreml-deployment.html')
+
+        import turicreate as tc
+        self.__proxy__.export_to_coreml(filename)

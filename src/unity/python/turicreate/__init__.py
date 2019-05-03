@@ -13,17 +13,6 @@ from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
 
-# ---------------------------------------------------------------------------
-# THIS IS AN OSS OVERRIDE FILE
-#
-# What this means is that there is a corresponding file in the OSS directory,
-# and this file overrides that. Be careful when making changes.
-    # Specifically, do log the differences here.
-#
-# - OSS does not have all the toolkits and canvas
-# - OSS does not have aws
-# - OSS does not have gl_numpy
-# ---------------------------------------------------------------------------
 __version__ = '{{VERSION_STRING}}'
 from turicreate.version_info import __version__
 
@@ -36,7 +25,7 @@ from turicreate.data_structures.image import Image
 from .data_structures.sarray_builder import SArrayBuilder
 from .data_structures.sframe_builder import SFrameBuilder
 
-from turicreate.data_structures.sgraph import load_sgraph, load_graph
+from turicreate.data_structures.sgraph import load_sgraph
 
 import turicreate.aggregate
 import turicreate.toolkits
@@ -83,22 +72,28 @@ from turicreate.toolkits.clustering import dbscan
 from turicreate.toolkits.topic_model import topic_model
 
 from turicreate.toolkits.image_analysis import image_analysis
-import turicreate.toolkits.sentence_classifier as sentence_classifier
+import turicreate.toolkits.text_classifier as text_classifier
 import turicreate.toolkits.image_classifier as image_classifier
 import turicreate.toolkits.image_similarity as image_similarity
 import turicreate.toolkits.object_detector as object_detector
+import turicreate.toolkits.one_shot_object_detector as one_shot_object_detector
+import turicreate.toolkits.style_transfer as style_transfer
+import turicreate.toolkits.sound_classifier.sound_classifier as sound_classifier
 import turicreate.toolkits.activity_classifier as activity_classifier
+import turicreate.toolkits.drawing_classifier as drawing_classifier
+
+from turicreate.toolkits.image_analysis.image_analysis import load_images
+from turicreate.toolkits.audio_analysis.audio_analysis import load_audio
 
 from turicreate.toolkits import evaluation
 
 # internal util
-from turicreate.connect.main import launch as _launch
-import turicreate.connect.main as glconnect
+from turicreate._connect.main import launch as _launch
 
 ## bring load functions to the top level
 from turicreate.data_structures.sframe import load_sframe
-from turicreate.toolkits._model import load_model, Model
-from .cython import cy_pylambda_workers
+from turicreate.data_structures.sarray import load_sarray
+from turicreate.toolkits._model import load_model
 
 ################### Extension Importing ########################
 import turicreate.extensions
@@ -117,7 +112,7 @@ class _extensions_wrapper(object):
         return getattr(self._wrapped, name)
     except:
         pass
-    turicreate.connect.main.get_unity()
+    turicreate._connect.main.get_unity()
     return getattr(self._wrapped, name)
 
 import sys as _sys
@@ -125,27 +120,6 @@ _sys.modules["turicreate.extensions"] = _extensions_wrapper(_sys.modules["turicr
 # rewrite the import
 extensions = _sys.modules["turicreate.extensions"]
 
-
-def _mxnet_check():
-    try:
-        import mxnet as _mx
-        version_tuple = tuple(int(x) for x in _mx.__version__.split('.') if x.isdigit())
-        lowest_version = (0, 11, 0)
-        not_yet_supported_version = (1, 0, 0)
-        recommended_version_str = '0.12.1'
-        if not (lowest_version <= version_tuple < not_yet_supported_version):
-            print('WARNING: You are using MXNet', _mx.__version__, 'which may result in breaking behavior.')
-            print('         To fix this, please install the currently recommended version:')
-            print()
-            print('             pip uninstall -y mxnet && pip install mxnet==%s' % recommended_version_str)
-            print()
-            print("         If you want to use a CUDA GPU, then change 'mxnet' to 'mxnet-cu90' (adjust 'cu90' depending on your CUDA version):")
-            print()
-    except (ImportError, OSError):
-        pass
-
-_mxnet_check()
-
-from .visualization import show
+from .visualization import plot, show
 
 _launch()

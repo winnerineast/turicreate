@@ -50,6 +50,10 @@ void parse_jpeg(const char* data, size_t length,
     jpeg_mem_src(&cinfo, (unsigned char*)data, length); // Specify data source for decompression
     jpeg_read_header(&cinfo, TRUE); // Read file header, set default decompression parameters
 
+    if (cinfo.out_color_space != JCS_GRAYSCALE && cinfo.out_color_space != JCS_RGB) {
+      log_and_throw(std::string("Unsupported colorspace format. Currently, only RGB and Grayscale are supported."));
+    }
+
     width = cinfo.image_width;
     height = cinfo.image_height;
     channels = cinfo.num_components;

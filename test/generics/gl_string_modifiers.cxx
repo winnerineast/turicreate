@@ -1,25 +1,8 @@
-/*
- * Copyright (c) 2013 Turi Inc.
- *     All rights reserved.
+/* Copyright © 2017 Apple Inc. All rights reserved.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing,
- *  software distributed under the License is distributed on an "AS
- *  IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- *  express or implied.  See the License for the specific language
- *  governing permissions and limitations under the License.
- *
- * For more about this software visit:
- *
- *      http://turicreate.com
- *
+ * Use of this source code is governed by a BSD-3-clause license that can
+ * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
  */
-
 #define BOOST_TEST_MODULE
 #include <boost/test/unit_test.hpp>
 #include <util/test_macros.hpp>
@@ -625,7 +608,7 @@ struct test_string_modifiers  {
   
   void test_string_erase_erase_iter_db1() {
     gl_string l1("123");
-    gl_string::const_iterator i = l1.end();
+    TURI_ATTRIBUTE_UNUSED_NDEBUG gl_string::const_iterator i = l1.end();
 #ifndef NDEBUG
     TS_ASSERT_THROWS_ANYTHING(l1.erase(i));
 #endif 
@@ -634,7 +617,7 @@ struct test_string_modifiers  {
   void test_string_erase_erase_iter_db2() {
     gl_string l1("123");
     gl_string l2("123");
-    gl_string::const_iterator i = l2.begin();
+    TURI_ATTRIBUTE_UNUSED_NDEBUG gl_string::const_iterator i = l2.begin();
 #ifndef NDEBUG
     TS_ASSERT_THROWS_ANYTHING(l1.erase(i));
 #endif 

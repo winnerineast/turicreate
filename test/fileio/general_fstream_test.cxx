@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE
 #include <boost/test/unit_test.hpp>
+#include <util/fs_util.hpp>
 #include <util/test_macros.hpp>
 #include <string>
 #include <stdio.h>
@@ -16,38 +17,41 @@ namespace fs = boost::filesystem;
 
 struct general_fstream_test {
 
-  char* tmpname;
+  std::string temp_file_path;
 
   public:
 
-    general_fstream_test() : 
-#ifndef _WIN32
-      tmpname (tmpnam(NULL)) {
-#else
-      tmpname( _tempnam(NULL, NULL) ) {
-#endif
+    general_fstream_test() : temp_file_path(
+      turi::fs_util::system_temp_directory_unique_path("", "")) {
       global_logger().set_log_level(LOG_INFO);
     }
 
     void tearDownWorld() {
-      fs::remove(fs::path(std::string(tmpname)));
+      fs::remove(fs::path(temp_file_path));
     }
 
     void test_local_url() {
-      std::string fname = std::string(tmpname);
+      std::string fname = temp_file_path;
+      logstream(LOG_INFO) << "Test on url: " << fname  << std::endl;
+      TS_ASSERT_EQUALS(helper_test_basic_read_write(fname), 0);
+      TS_ASSERT_EQUALS(helper_test_seek(fname), 0);
+    }
+
+    void test_local_url_with_prefix() {
+      std::string fname = "file://" + temp_file_path;
       logstream(LOG_INFO) << "Test on url: " << fname  << std::endl;
       TS_ASSERT_EQUALS(helper_test_basic_read_write(fname), 0);
       TS_ASSERT_EQUALS(helper_test_seek(fname), 0);
     }
 
     void test_caching_url() {
-      std::string fname = "cache://" + std::string(tmpname);
-      logstream(LOG_INFO) << "Test on url: " << fname  << std::endl;
+      std::string fname = "cache://" + temp_file_path;
+      logstream(LOG_INFO) << "Test on url: " << fname  << std::endl;      
       TS_ASSERT_EQUALS(helper_test_basic_read_write(fname), 0);
       TS_ASSERT_EQUALS(helper_test_seek(fname), 0);
 
 
-      // fname = "cache://" + std::string(tmpname) + ".gz";
+      // fname = "cache://" + temp_file_path + ".gz";
       fname = "./test.gz";
       logstream(LOG_INFO) << "Test on url: " << fname  << std::endl;
       TS_ASSERT_EQUALS(helper_test_basic_read_write(fname), 0);
@@ -59,10 +63,10 @@ struct general_fstream_test {
       TS_ASSERT_EQUALS(get_filename("/hello"), "hello");
       TS_ASSERT_EQUALS(get_filename("/hello/world.bin"), "world.bin");
       TS_ASSERT_EQUALS(get_filename("s3://world/pika.bin"), "pika.bin");
+      TS_ASSERT_EQUALS(get_filename("file:///pika.bin"), "pika.bin");
       TS_ASSERT_EQUALS(get_filename("hdfs:///pika.bin"), "pika.bin");
       TS_ASSERT_EQUALS(get_filename("hdfs:///chu/pika.bin"), "pika.bin");
-      TS_ASSERT_EQUALS(get_dirname("/hello"), "");
-      TS_ASSERT_EQUALS(get_dirname("/hello/world.bin"), "/hello");
+      TS_ASSERT_EQUALS(get_dirname("/hello"), "");      TS_ASSERT_EQUALS(get_dirname("/hello/world.bin"), "/hello");
       TS_ASSERT_EQUALS(get_dirname("s3://world/pika.bin"), "s3://world");
       TS_ASSERT_EQUALS(get_dirname("hdfs:///pika.bin"), "hdfs://");
       TS_ASSERT_EQUALS(get_dirname("hdfs:///chu/pika.bin"), "hdfs:///chu");
@@ -70,10 +74,10 @@ struct general_fstream_test {
       TS_ASSERT_EQUALS(make_absolute_path("/", "hello"), "/hello");
       TS_ASSERT_EQUALS(make_absolute_path("/pika", "hello"), "/pika/hello");
       TS_ASSERT_EQUALS(make_absolute_path("/pika/", "hello"), "/pika/hello");
+      TS_ASSERT_EQUALS(make_absolute_path("file:///pika/", "hello"), "file:///pika/hello");
       TS_ASSERT_EQUALS(make_absolute_path("s3://pika/", "hello"), "s3://pika/hello");
       TS_ASSERT_EQUALS(make_absolute_path("hdfs:///pika/", "hello"), "hdfs:///pika/hello");
-      TS_ASSERT_EQUALS(make_absolute_path("hdfs:///", "hello"), "hdfs:///hello");
-      TS_ASSERT_EQUALS(make_absolute_path("hdfs://", "hello"), "hdfs:///hello");
+      TS_ASSERT_EQUALS(make_absolute_path("hdfs:///", "hello"), "hdfs:///hello");      TS_ASSERT_EQUALS(make_absolute_path("hdfs://", "hello"), "hdfs:///hello");
 
       TS_ASSERT_EQUALS(make_relative_path("/", "/hello"), "hello");
       TS_ASSERT_EQUALS(make_relative_path("/pika", "/pika/hello"), "hello");
@@ -103,19 +107,21 @@ struct general_fstream_test {
       TS_ASSERT_EQUALS(get_protocol("hdfs://"), "hdfs");
       TS_ASSERT_EQUALS(get_protocol("s3://pikachu"), "s3");
       TS_ASSERT_EQUALS(get_protocol("/pikachu"), "");
+      TS_ASSERT_EQUALS(get_protocol("file:///pikachu"), "");
       TS_ASSERT_EQUALS(get_protocol("http://pikachu"), "http");
 
       TS_ASSERT_EQUALS(remove_protocol("hdfs://"), "");
+      TS_ASSERT_EQUALS(remove_protocol("file://"), "");
+      TS_ASSERT_EQUALS(remove_protocol("file://peekaboo"), "peekaboo");
       TS_ASSERT_EQUALS(remove_protocol("s3://pikachu"), "pikachu");
       TS_ASSERT_EQUALS(remove_protocol("/pikachu"), "/pikachu");
-      TS_ASSERT_EQUALS(remove_protocol("http://pikachu://pikachu"), "pikachu://pikachu");
-    }
+      TS_ASSERT_EQUALS(remove_protocol("http://pikachu://pikachu"), "pikachu://pikachu");    }
 
     int helper_test_basic_read_write(const std::string& url) {
       std::string s;
       s.resize(16);
       for (size_t i = 0;i < 8; ++i) {
-        s[2 * i] = 255;
+        s[2 * i] = static_cast<char>(255);
         s[2 * i + 1] = 'a';
       }
       std::string expected;
@@ -187,12 +193,14 @@ struct general_fstream_test {
 
       auto& pool = turi::fileio::file_handle_pool::get_instance();
 
-      delete_path(tmpname);
-      TS_ASSERT_EQUALS((int)turi::fileio::get_file_status(tmpname), (int)turi::fileio::file_status::MISSING);
+      delete_path(temp_file_path.c_str());
+      TS_ASSERT_EQUALS(
+        (int)turi::fileio::get_file_status(temp_file_path.c_str()),
+        (int)turi::fileio::file_status::MISSING);
 
       {
-        std::cout << "Write to: " << tmpname << std::endl;
-        turi::general_ofstream fout(tmpname);
+        std::cout << "Write to: " << temp_file_path.c_str() << std::endl;
+        turi::general_ofstream fout(temp_file_path.c_str());
         std::string expected;
         std::string c = "abc";
         for (size_t i = 0;i < 4096; ++i) {
@@ -202,21 +210,25 @@ struct general_fstream_test {
         ASSERT_TRUE(fout.good());
         fout.close();
 
-        auto handle = pool.register_file(tmpname);
+        auto handle = pool.register_file(temp_file_path.c_str());
         // on out of scope, the file should still exists
       }
 
-      TS_ASSERT_EQUALS((int)turi::fileio::get_file_status(tmpname), (int)turi::fileio::file_status::REGULAR_FILE);
+      TS_ASSERT_EQUALS(
+        (int)turi::fileio::get_file_status(temp_file_path.c_str()),
+        (int)turi::fileio::file_status::REGULAR_FILE);
 
       {
-        auto handle = pool.register_file(tmpname);
+        auto handle = pool.register_file(temp_file_path.c_str());
 
         // Now mark the file as deleted
-        pool.mark_file_for_delete(tmpname);
+        pool.mark_file_for_delete(temp_file_path.c_str());
       }
 
       // the file should be gone
-      TS_ASSERT_EQUALS((int)turi::fileio::get_file_status(tmpname), (int)turi::fileio::file_status::MISSING);
+      TS_ASSERT_EQUALS(
+        (int)turi::fileio::get_file_status(temp_file_path.c_str()),
+        (int)turi::fileio::file_status::MISSING);
     }
 };
 

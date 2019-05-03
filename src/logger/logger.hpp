@@ -49,6 +49,8 @@
 #include <timer/timer.hpp>
 #include <logger/fail_method.hpp>
 #include <logger/backtrace.hpp>
+#include <logger/error.hpp>
+#include <cppipc/server/cancel_ops.hpp>
 #include <util/code_optimization.hpp> 
 #include <process/process_util.hpp>
 
@@ -322,21 +324,34 @@
 
 #endif
 
+void write_annotated_stack_trace_if_configured(std::ostream&);
+
 #define log_and_throw(message)                                      \
   do {                                                              \
-    auto throw_error = [&]() GL_COLD_NOINLINE_ERROR {  \
+    auto throw_error = [&]() GL_COLD_NOINLINE_ERROR {               \
+      write_annotated_stack_trace_if_configured(std::cerr);         \
       logstream(LOG_ERROR) << (message) << std::endl;               \
       throw(std::string(message));                                  \
     };                                                              \
     throw_error();                                                  \
   } while(0)                                                 
 
+#define std_log_and_throw(key_type, message)                        \
+  do {                                                              \
+    auto throw_error = [&]() GL_COLD_NOINLINE_ERROR {               \
+      write_annotated_stack_trace_if_configured(std::cerr);         \
+      logstream(LOG_ERROR) << (message) << std::endl;               \
+      throw(key_type(message));                                     \
+    };                                                              \
+    throw_error();                                                  \
+  } while (0)
+
 #ifdef COMPILER_HAS_IOS_BASE_FAILURE_WITH_ERROR_CODE
 #define log_and_throw_io_failure(message)                             \
   do {                                                                \
     auto throw_error = [&]() GL_COLD_NOINLINE_ERROR {    \
       logstream(LOG_ERROR) << (message) << std::endl;                 \
-      throw(std::ios_base::failure(message, std::error_code()));      \
+      throw(turi::error::io_error(message, std::error_code()));      \
     };                                                                \
     throw_error();                                                    \
   } while(0)
@@ -345,11 +360,19 @@
   do {                                                                \
     auto throw_error = [&]() GL_COLD_NOINLINE_ERROR {    \
       logstream(LOG_ERROR) << (message) << std::endl;                 \
-      throw(std::ios_base::failure(message));                         \
+      throw(turi::error::io_error(message));                         \
     };                                                                \
     throw_error();                                                    \
   } while(0)
 #endif
+
+#define log_and_throw_current_io_failure()                            \
+  do {                                                                \
+    auto error_code = errno;                                          \
+    std::string error_message = std::strerror(error_code);            \
+    errno = 0; /* clear errno */                                      \
+    log_and_throw_io_failure(error_message);                          \
+  } while(0)
 
 #define log_func_entry()                                       \
   do {                                                         \
@@ -480,7 +503,9 @@ class file_logger{
       std::stringstream& streambuffer = streambufentry->streambuffer;
       bool& streamactive = streambufentry->streamactive;
 
-      if (streamactive) streambuffer << a;
+      if (streamactive) {
+        streambuffer << a;
+      }
     }
     return *this;
   }
@@ -518,15 +543,19 @@ class file_logger{
       std::stringstream& streambuffer = streambufentry->streambuffer;
       bool& streamactive = streambufentry->streamactive;
 
-      typedef std::ostream& (*endltype)(std::ostream&);
       if (streamactive) {
-        if (endltype(f) == endltype(std::endl)) {
-          streambuffer << "\n";
-          stream_flush();
-          if(streamloglevel == LOG_FATAL) {
-            __print_back_trace();
-            TURI_LOGGER_FAIL_METHOD("LOG_FATAL encountered");
-          }
+        // TODO: previously, we had a check for if (endltype(f) == endltype(std::endl))
+        // and only flushed the stream on endl (ignoring all other stream modifiers).
+        // On recent clang compilers, this check seems to always return false in debug.
+        // (tested with Apple LLVM version 10.0.0 (clang-1000.11.45.5))
+        // As a workaround, let's just flush the stream on all modifiers.
+        // In practice they're usually endl anyway, so the perf hit should not be too bad.
+        streambuffer << f;
+        stream_flush();
+        if(streamloglevel == LOG_FATAL) {
+          __print_back_trace();
+          write_annotated_stack_trace_if_configured(std::cerr);
+          TURI_LOGGER_FAIL_METHOD("LOG_FATAL encountered");
         }
       }
     }
@@ -629,6 +658,7 @@ struct log_dispatch<true> {
     va_end(argp);
     if(loglevel == LOG_FATAL) {
       __print_back_trace();
+      write_annotated_stack_trace_if_configured(std::cerr);
       TURI_LOGGER_FAIL_METHOD("LOG_FATAL encountered");
     }
   }
@@ -655,6 +685,12 @@ struct log_stream_dispatch {};
 template <>
 struct log_stream_dispatch<true> {
   inline static file_logger& exec(int lineloglevel,const char* file,const char* function, int line, bool do_start = true) {
+    // First see if there is an interupt waiting.  This is a convenient place that a lot of people call.
+    if(cppipc::must_cancel()) {
+      log_and_throw("Canceled by user.");
+    }
+
+
     return global_logger().start_stream(lineloglevel, file, function, line, do_start);
   }
 };
@@ -662,12 +698,38 @@ struct log_stream_dispatch<true> {
 template <>
 struct log_stream_dispatch<false> {
   inline static null_stream exec(int lineloglevel,const char* file,const char* function, int line, bool do_start = true) {
+    
+    // First see if there is an interupt waiting.  This is a convenient place that a lot of people call.
+    if(cppipc::must_cancel()) {
+      log_and_throw("Canceled by user.");
+    }
+
     return null_stream();
   }
 };
 
+
+#define TEXTCOLOR_RESET   0
+#define TEXTCOLOR_BRIGHT    1
+#define TEXTCOLOR_DIM   2
+#define TEXTCOLOR_UNDERLINE   3
+#define TEXTCOLOR_BLINK   4
+#define TEXTCOLOR_REVERSE   7
+#define TEXTCOLOR_HIDDEN    8
+
+#define TEXTCOLOR_BLACK     0
+#define TEXTCOLOR_RED   1
+#define TEXTCOLOR_GREEN   2
+#define TEXTCOLOR_YELLOW    3
+#define TEXTCOLOR_BLUE    4
+#define TEXTCOLOR_MAGENTA   5
+#define TEXTCOLOR_CYAN    6
+#define TEXTCOLOR_WHITE   7
+
 void textcolor(FILE* handle, int attr, int fg);
+std::string textcolor(int attr, int fg);
 void reset_color(FILE* handle);
+std::string reset_color();
 
 #endif
 

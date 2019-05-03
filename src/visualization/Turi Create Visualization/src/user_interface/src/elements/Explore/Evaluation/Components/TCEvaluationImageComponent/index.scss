@@ -1,0 +1,21 @@
+.TCEvaluationImageComponent{
+	overflow: hidden;
+	width: 130px;
+	height: 130px;
+	margin-right: 10px;
+	position: relative;
+	background: black;
+}
+
+.TCEvaluationImageComponentExport{
+	z-index: 90;
+	position: absolute;
+	right: 2px;
+	top: -3px;
+	opacity: 0.5;
+	cursor: pointer;
+}
+
+.TCEvaluationImageComponentExport:hover{
+	opacity: 1.0;
+}

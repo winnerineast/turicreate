@@ -22,10 +22,10 @@
 #include <unity/toolkits/ml_data_2/metadata.hpp>
 
 // Interfaces
-#include <unity/toolkits/ml_model/ml_model.hpp>
+#include <unity/lib/extensions/ml_model.hpp>
 
 // External
-#include <numerics/armadillo.hpp>
+#include <Eigen/Core>
 #include <export.hpp>
 namespace turi {
 
@@ -60,8 +60,8 @@ class EXPORT topic_model : public ml_model_base{
 
  public:
 
-  typedef arma::Mat<int32_t> count_matrix_type;
-  typedef arma::Row<int32_t> count_vector_type;
+  typedef Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> count_matrix_type;
+  typedef Eigen::Matrix<int, 1, Eigen::Dynamic, Eigen::RowMajor> count_vector_type;
 
   static constexpr size_t TOPIC_MODEL_VERSION = 1;
 
@@ -80,7 +80,7 @@ class EXPORT topic_model : public ml_model_base{
   std::shared_ptr<v2::ml_metadata> metadata;
 
   // Statistics
-  count_matrix_type topic_word_counts;      /* < Total count for each word. */
+  count_matrix_type word_topic_counts;      /* < Total count for each word. */
 
   // State
   bool is_initialized;        /* < Flag for whether model is ready. */
@@ -106,38 +106,29 @@ class EXPORT topic_model : public ml_model_base{
   virtual topic_model* topic_model_clone() = 0;
 
   /**
-   * Returns the name of the model.
-   *
-   * \returns Name of the model.
-   *
-   * \ref model_base for details.
-   */
-  virtual std::string name() = 0;
-
-  /**
    * Set the model options. Use the option manager to set these options. The
    * option manager should throw errors if the options do not satisfy the option
    * manager's conditions.
    *
    * \param[in] opts Options to set
    */
-  virtual void init_options(const std::map<std::string,flexible_type>& _opts) = 0;
+  virtual void init_options(const std::map<std::string,flexible_type>& _opts) override = 0;
 
 
   /**
    * Gets the model version number
    */
-  virtual size_t get_version() const = 0;
+  virtual size_t get_version() const override = 0;
 
   /**
    * Serialize the model object.
    */
-  virtual void save_impl(turi::oarchive& oarc) const = 0;
+  virtual void save_impl(turi::oarchive& oarc) const override = 0;
 
   /**
    * Load the model object.
    */
-  virtual void load_version(turi::iarchive& iarc, size_t version) = 0;
+  virtual void load_version(turi::iarchive& iarc, size_t version) override = 0;
 
   /**
    * Create a topic model.
@@ -152,21 +143,13 @@ class EXPORT topic_model : public ml_model_base{
    * \ref model_base for details.
    *
    */
-  std::vector<std::string> list_keys();
+  std::vector<std::string> list_fields();
 
   /**
    * Methods with meaningful default implementations.
    * -------------------------------------------------------------------------
    */
   public:
-
-  /**
-   * Makes a copy of this model object.
-   *
-   * \ref model_base for details.
-   */
-  ml_model_base* ml_model_base_clone();
-
 
   /**
    * Helper function for creating the appropriate ml_data from an sarray of
@@ -233,11 +216,11 @@ class EXPORT topic_model : public ml_model_base{
    * Make predictions on the given data set.
    *
    * This method closely resembles the sampler in the collapsed Gibbs
-   * sampler solver found in cgs.hpp. Here, however, the topic_word_counts
+   * sampler solver found in cgs.hpp. Here, however, the word_topic_counts
    * matrix is held fixed. For each document, num_burnin iterations are
    * performed where in each iteration we sample the topic_assignments.
    * The returned predictions are probabilities, and are computed by
-   * smoothing the topic_doc_counts matrix that arising from sampling.
+   * smoothing the doc_topic_counts matrix that arising from sampling.
    *
    */
   std::shared_ptr<sarray<flexible_type>>
@@ -277,8 +260,8 @@ class EXPORT topic_model : public ml_model_base{
    *
    */
   double perplexity(std::shared_ptr<sarray<flexible_type>> documents,
-                    const count_matrix_type& topic_doc_counts,
-                    const count_matrix_type& topic_word_counts);
+                    const count_matrix_type& doc_topic_counts,
+                    const count_matrix_type& word_topic_counts);
 
   void init_validation(std::shared_ptr<sarray<flexible_type> > validation_train,
 std::shared_ptr<sarray<flexible_type> > validation_test);

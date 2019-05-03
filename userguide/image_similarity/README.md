@@ -13,7 +13,7 @@ unsupervised.
 In this example, we use the [Caltech-101
 dataset](http://www.vision.caltech.edu/Image_Datasets/Caltech101/)
 which contains images objects belonging to 101 categories with about 40
-to 800 images per category.
+to 800 images per category.[<sup>1</sup>](../datasets.md)
 
 ```python
 import turicreate as tc
@@ -22,8 +22,8 @@ import turicreate as tc
 reference_data  = tc.image_analysis.load_images('./101_ObjectCategories')
 reference_data = reference_data.add_row_number()
 
-# Save the data for future use
-reference_data.save('caltech-101.sframe')
+# Save the SFrame for future use
+reference_data.save('./caltech-101.sframe')
 ```
 
 We can explore the data interactively using:
@@ -39,14 +39,19 @@ model = tc.image_similarity.create(reference_data)
 
 #### Querying the model
 
-Once created, we can query the model to retrieve the five closest images
-in the original reference data. The result of the query method is an
-SFrame with four columns: query label, reference label, distance, and
-rank of the reference point among the query point's nearest neighbors.
+Once created, we can query the model to retrieve the ten closest images
+in the original reference data (by setting the `k` parameter to `10`).
+The result of the query method is an SFrame with four columns: query
+label, reference label, distance, and rank of the reference point 
+among the query point's nearest neighbors.
+
+_Note: You can pass in an image, or an SArray of images into the `model.query`_
+_method. This image or array of images does **not** need to be a part of the_
+_original dataset._
 
 ```python
-similar_images = model.query(reference_data[0:10], k=10)
-similar_images.head()
+query_results = model.query(reference_data[0:10], k=10)
+query_results.head()
 ```
 ```no-highlight
 +-------------+-----------------+---------------+------+
@@ -66,15 +71,18 @@ similar_images.head()
 [100 rows x 4 columns]
 ```
 
-Now, for a simple image like this (let's say the 9th image in the data)
+Now, for a simple image like this (let's say the 10th image in the data).
 ```python
-reference_data[9].show()
+reference_data[9]['image'].show()
 ```
 ![Similar images](images/sample_image.jpg)
+Note: the loading order of images is non-deterministic, so your 10th image
+is likely something different but this isn't important for demonstration purposes.
 
 The 10 most "similar" looking images are
 ```python
-similar_images[similar_images['query_label'] == 9].explore()
+similar_rows = query_results[query_results['query_label'] == 9]['reference_label']
+reference_data.filter_by(similar_rows, 'id').explore()
 ```
 
 ![Similar images](images/similar_images.png)
@@ -83,7 +91,7 @@ similar_images[similar_images['query_label'] == 9].explore()
 
 In some cases, we want to find the most similar images in the reference
 dataset for all images in the reference dataset. The similarity_graph
-method returns an SGraph whose vertices are the rows of the reference
+method returns an SGraph whose vertices are the row numbers of the reference
 dataset and whose edges indicate a nearest neighbor match. Specifically,
 the destination vertex of an edge is a nearest neighbor of the source
 vertex. `similarity_graph` can also return results in the same form as the
@@ -111,6 +119,35 @@ similar_images = similarity_graph.edges
 [91440 rows x 4 columns]
 ```
 
+##### Saving the model
+
+Once you have created a model, you can save it and load it back later for use.
+
+```python
+model.save('./myModel.model')
+loaded_model = turicreate.load_model('./myModel.model')
+```
+
+#### Using GPUs
+
+GPUs can make creating an image similarity model much faster. If you have
+macOS 10.13 or higher, Turi Create will automatically use the GPU. If
+your Linux machine has an NVIDIA GPU, you can setup Turi Create to use
+the GPU, [see instructions](https://github.com/apple/turicreate/blob/master/LinuxGPU.md).
+
+The `turicreate.config.set_num_gpus` function allows you to control if GPUs are used:
+```python
+# Use all GPUs (default)
+turicreate.config.set_num_gpus(-1)
+
+# Use only 1 GPU
+turicreate.config.set_num_gpus(1)
+
+# Use CPU
+turicreate.config.set_num_gpus(0)
+```
+
+
 #### How it works
 
 The key ideas in the image similarity model are similar to those in
@@ -129,7 +166,7 @@ task.
 
 * **Stage 3**: Create a [nearest
   neighbors](../nearest_neighbors/nearest_neighbors.md) model with those
-features as input for your own task.
+feature vectors as input.
 
 #### References
 

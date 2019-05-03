@@ -15,6 +15,7 @@
 #include <unity/toolkits/recsys/models.hpp>
 #include <unity/toolkits/recsys/user_item_lists.hpp>
 #include <unity/toolkits/recsys/recsys_model_base.hpp>
+#include <unity/toolkits/recsys/train_test_split.hpp>
 #include <unity/toolkits/util/precision_recall.hpp>
 #include <unity/toolkits/util/sframe_utils.hpp>
 #include <unity/toolkits/evaluation/metrics.hpp>
@@ -23,6 +24,7 @@
 #include <algorithm>
 #include <logger/logger.hpp>
 #include <sstream>
+#include <unity/toolkits/coreml_export/mlmodel_wrapper.hpp>
 
 // Types
 #include <unity/lib/variant.hpp>
@@ -416,6 +418,12 @@ static std::vector<size_t> extract_categorical_column(
   return out;
 }
 
+std::shared_ptr<coreml::MLModelWrapper> recsys_model_base::export_to_coreml(const std::string& filename) {
+  flexible_type model_name = name();
+  log_and_throw("Currently, only item similarity models can be exported to Core ML (use turicreate.item_similarity.create to make such a model).");
+  ASSERT_UNREACHABLE();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 void recsys_model_base::choose_diversely(size_t top_k,
@@ -560,7 +568,6 @@ void recsys_model_base::choose_diversely(size_t top_k,
   candidates.resize(chosen_items.size());
 }
 
-
 sframe recsys_model_base::recommend(
     const sframe& query_data,
     size_t top_k,
@@ -573,25 +580,27 @@ sframe recsys_model_base::recommend(
     double diversity_factor,
     size_t random_seed) const {
 
+  
   const std::string& user_column_name = metadata->column_name(USER_COLUMN_INDEX);
   const std::string& item_column_name = metadata->column_name(ITEM_COLUMN_INDEX);
-
+  
   ////////////////////////////////////////////////////////////////////////////////
   // Step 1: Set up the query data. This is what we'll be iterating
   // over.
 
+  
   // We have three cases here -- all users, a list of users, and an ml_data of observations.
   enum {ALL, LIST, OBSERVATION_ROWS} user_processing_mode;
-
+  
   size_t n_queries;
-
+  
   // Used in LIST mode
   std::vector<size_t> user_query_list;
-
+  
   // Used in OBSERVATION_ROWS mode
   std::unique_ptr<v2::ml_data> query_ml;
   std::vector<size_t> query_column_index_remapping;
-
+  
   // The list of users case
   if(query_data.num_columns() == 0) {
     user_processing_mode = ALL;
@@ -614,10 +623,10 @@ sframe recsys_model_base::recommend(
       if(query_data.column_name(0) != user_column_name) {
         log_and_throw("If given, query data for recommend(...) requires a user column.");
       }
-
+  
       user_query_list = extract_categorical_column(metadata->indexer(USER_COLUMN_INDEX),
                                              query_data.select_column(user_column_name));
-
+  
       n_queries = user_query_list.size();
       break;
     }
@@ -625,7 +634,7 @@ sframe recsys_model_base::recommend(
     case OBSERVATION_ROWS: {
 
       std::vector<std::string> ref_data_names = query_data.column_names();
-
+      
       if(!query_data.contains_column(user_column_name)) {
         log_and_throw("Query data for recommend(...) requires a user column to be present.");
       }
@@ -633,6 +642,7 @@ sframe recsys_model_base::recommend(
       if(query_data.contains_column(item_column_name)) {
         log_and_throw("Query data for recommend(...) cannot contain an item column.");
       }
+
 
       for(size_t i = 0; i < ref_data_names.size(); ++i) {
         const std::string& cn = ref_data_names[i];
@@ -657,21 +667,21 @@ sframe recsys_model_base::recommend(
                 [&](const std::string& c1, const std::string& c2) {
                   return metadata->column_index(c1) < metadata->column_index(c2);
                 });
-
       query_ml.reset(new v2::ml_data(metadata->select_columns(ref_data_names)));
       query_ml->fill(query_data);
-
+  
       // Now, build the column remapping; after select columns, the
       // column indices may be reordered.
       const auto& qml = query_ml->metadata();
-
+  
       query_column_index_remapping.resize(qml->num_columns());
       for(size_t i = 0; i < qml->num_columns(); ++i) {
         query_column_index_remapping[i] = metadata->column_index(qml->column_name(i));
       }
 
+  
       n_queries = query_ml->num_rows();
-
+  
       break;
     }
   }
@@ -829,6 +839,8 @@ sframe recsys_model_base::recommend(
   // set up a reference vector that we use to populate the set of
   // scores sent in to the score_all_items function.
 
+
+
   typedef std::pair<size_t, double> item_score_pair;
 
   ////////////////////////////////////////////////////////////////////////////////
@@ -979,6 +991,11 @@ sframe recsys_model_base::recommend(
 
             user_hash_key = hash64( (const char*)(query_x.data()), sizeof(v2::ml_data_entry)*query_x.size());
             break;
+          }
+
+          default: {
+            log_and_throw("Unsupported value for user_processing_mode");
+            ASSERT_UNREACHABLE();
           }
         }
 
@@ -1200,6 +1217,56 @@ sframe recsys_model_base::recommend(
   return ret;
 }
 
+
+// This is a hack to have sframe cross over to python. In the future, the extensions mechanism 
+// should do this automatically and we shouldn't have to write this workaround. 
+std::shared_ptr<unity_sframe_base> recsys_model_base::recommend_extension_wrapper(
+  std::shared_ptr<unity_sframe_base> reference_data,
+  std::shared_ptr<unity_sframe_base> new_observation_data,
+  flex_int top_k) const {
+
+  std::shared_ptr<unity_sframe> usframe_refdata =
+              std::dynamic_pointer_cast<unity_sframe> (reference_data);
+  const sframe& outputSFrame = this->recommend(
+    *(std::dynamic_pointer_cast<unity_sframe>(reference_data)->get_underlying_sframe()),
+    top_k,
+    sframe(), // restriction_data
+    sframe(), // exclusion_data
+    *(std::dynamic_pointer_cast<unity_sframe>(new_observation_data)->get_underlying_sframe())
+  );
+  std::shared_ptr<unity_sframe> usframe = std::make_shared<unity_sframe>();
+  usframe->construct_from_sframe(outputSFrame);
+  
+  return usframe;
+
+}
+
+// This is a hack to have sframe cross over to python. In the future, the extensions mechanism 
+// should do this automatically and we shouldn't have to write this workaround. 
+std::shared_ptr<unity_sframe_base> recsys_model_base::get_num_users_per_item_extension_wrapper(
+  ) const {
+
+  const sframe& outputSFrame = this->get_num_users_per_item();
+  std::shared_ptr<unity_sframe> usframe = std::make_shared<unity_sframe>();
+  usframe->construct_from_sframe(outputSFrame);
+  
+  return usframe;
+
+}
+
+// This is a hack to have sframe cross over to python. In the future, the extensions mechanism 
+// should do this automatically and we shouldn't have to write this workaround. 
+std::shared_ptr<unity_sframe_base> recsys_model_base::get_num_items_per_user_extension_wrapper(
+  ) const {
+
+  const sframe& outputSFrame = this->get_num_items_per_user();
+  std::shared_ptr<unity_sframe> usframe = std::make_shared<unity_sframe>();
+  usframe->construct_from_sframe(outputSFrame);
+  
+  return usframe;
+
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 sframe recsys_model_base::precision_recall_stats(
@@ -1268,13 +1335,32 @@ sframe recsys_model_base::precision_recall_stats(
 
 /// serialization -- save
 void recsys_model_base::save_impl(turi::oarchive& oarc) const {
-
   // Write state
   variant_deep_save(state, oarc);
 
   oarc << options
-       << metadata
-       << *trained_user_items;
+       << metadata;
+
+  if (oarc.dir) {
+    // if no dir_archive available, skip writing user data
+    // the load then must take place with no dir_archive available
+    // (symmetric save/load only with respect to presence of dir_archive)
+    oarc << *trained_user_items;
+  } else {
+    // write trained_user_items as a vector<vector<pair<size_t, double>>> instead of sarray
+    // so we don't require a dir_archive
+    std::vector<std::vector<std::pair<size_t, double> > > temp_trained_user_items;
+    auto reader = trained_user_items->get_reader();
+    for (size_t i=0; i<trained_user_items->num_segments(); i++) {
+        auto iter = reader->begin(i);
+        auto end = reader->end(i);
+        while (iter != end) {
+          temp_trained_user_items.push_back(*iter);
+          ++iter;
+        }
+    }
+    oarc << temp_trained_user_items;
+  }
 
   // save the file version
   oarc << internal_get_version();
@@ -1304,65 +1390,68 @@ void recsys_model_base::load_version(turi::iarchive& iarc, size_t version) {
   // Now, if there have been any additional options added since this
   // model was saved, go through and add those to the option manager.
 
-  
-  if (version == 1) {
-    // Version 1 had the base type stored as a flex_dict so
-    // item_similarity could use it in a graph, but for speed version
-    // 2+ stores it as vector of index, double pairs.  Thus we need to
-    // convert that here.
+  // if no dir_archive, skip attempting to load user data
+  // (see comments in save_impl)
+  if (iarc.dir) {
+    if (version == 1) {
+      // Version 1 had the base type stored as a flex_dict so
+      // item_similarity could use it in a graph, but for speed version
+      // 2+ stores it as vector of index, double pairs.  Thus we need to
+      // convert that here.
 
-    auto tmp = std::make_shared<sarray<flex_dict> >();
-    iarc >> *tmp;
+      auto tmp = std::make_shared<sarray<flex_dict> >();
+      iarc >> *tmp;
 
-    trained_user_items.reset(new sarray<std::vector<std::pair<size_t, double> > >);
+      trained_user_items.reset(new sarray<std::vector<std::pair<size_t, double> > >);
 
-    size_t n = tmp->size();
+      size_t n = tmp->size();
 
-    // Convert everything over
-    size_t max_num_threads = thread::cpu_count();
-    trained_user_items->open_for_write(max_num_threads);
-    auto reader = tmp->get_reader(max_num_threads);
+      // Convert everything over
+      size_t max_num_threads = thread::cpu_count();
+      trained_user_items->open_for_write(max_num_threads);
+      auto reader = tmp->get_reader(max_num_threads);
 
-    in_parallel([&](size_t thread_idx, size_t num_threads) {
-        size_t start_idx = (thread_idx * n) / num_threads;
-        size_t end_idx = ((thread_idx+1) * n) / num_threads;
+      in_parallel([&](size_t thread_idx, size_t num_threads) {
+          size_t start_idx = (thread_idx * n) / num_threads;
+          size_t end_idx = ((thread_idx+1) * n) / num_threads;
 
-        auto it_out = trained_user_items->get_output_iterator(thread_idx);
+          auto it_out = trained_user_items->get_output_iterator(thread_idx);
 
-        std::vector<flex_dict> row_buf_v;
-        std::vector<std::pair<size_t, double> > out;
+          std::vector<flex_dict> row_buf_v;
+          std::vector<std::pair<size_t, double> > out;
 
-        for(size_t i = start_idx; i < end_idx; ++i, ++it_out) {
-          reader->read_rows(i, i+1, row_buf_v);
+          for(size_t i = start_idx; i < end_idx; ++i, ++it_out) {
+            reader->read_rows(i, i+1, row_buf_v);
 
-          const auto& row = row_buf_v[0];
-          out.assign(row.begin(), row.end());
-          *it_out = out;
-        }
-      });
+            const auto& row = row_buf_v[0];
+            out.assign(row.begin(), row.end());
+            *it_out = out;
+          }
+        });
 
-    trained_user_items->close();
+      trained_user_items->close();
 
+    } else {
+      trained_user_items.reset(new sarray<std::vector<std::pair<size_t, double> > >);
+      iarc >> *trained_user_items;
+    }
   } else {
+    // no dir_archive - read from an std::vector instead of sarray
+    std::vector<std::vector<std::pair<size_t, double> > > temp_trained_user_items;
+    iarc >> temp_trained_user_items;
     trained_user_items.reset(new sarray<std::vector<std::pair<size_t, double> > >);
-    iarc >> *trained_user_items;
+    trained_user_items->open_for_write();
+    auto iter = trained_user_items->get_output_iterator(0);
+    for (const auto& val : temp_trained_user_items) {
+      (*iter) = val;
+      ++iter;
+    }
+    trained_user_items->close();
   }
 
   size_t internal_version;
   iarc >> internal_version;
   internal_load(iarc, internal_version);
-}
-
-// other functions required by model_base interface.
-
-ml_model_base* recsys_model_base::ml_model_base_clone() {
-  recsys_model_base* rm = internal_clone();
-
-  rm->options            = options;
-  rm->metadata           = metadata;
-  rm->trained_user_items = trained_user_items;
-
-  return rm;
 }
 
   /** Some of the models, such as popularity, can be built entirely
@@ -1375,7 +1464,7 @@ void recsys_model_base::import_all_from_other_model(const recsys_model_base* oth
   recsys_model_base::operator=(*other);
 }
 
-std::shared_ptr<recsys_popularity> recsys_model_base::get_popularity_baseline() const {
+std::shared_ptr<recsys_model_base> recsys_model_base::get_popularity_baseline() const {
 
   std::shared_ptr<recsys_popularity> pop(new recsys_popularity);
 
@@ -1580,6 +1669,12 @@ sframe recsys_model_base::get_item_intersection_info(const sframe& unindexed_ite
   return out_data_1;
 }
 
+gl_sframe recsys_model_base::api_get_item_intersection_info(gl_sframe item_pairs) {
+
+  sframe item_info = this->get_item_intersection_info(item_pairs.materialize_to_sframe());
+
+  return gl_sframe(item_info);
+}
 
 sframe recsys_model_base::get_num_items_per_user() const {
 
@@ -1660,6 +1755,212 @@ sframe recsys_model_base::get_num_users_per_item() const {
   return ret;
 }
 
+gl_sframe recsys_model_base::api_get_similar_items(gl_sarray items, size_t k, size_t verbose, int get_all_items) const {
+
+  turi::timer timer;
+
+  auto items_sa = items.materialize_to_sarray();
+
+  if(get_all_items) {
+    items_sa.reset();
+  }
+
+  timer.start();
+
+  sframe raw_ranks = this->get_similar_items(items_sa, k);
+
+  if (verbose) {
+    logprogress_stream << "Getting similar items completed in "
+                       << timer.current_time() << "" << std::endl;
+  }
+
+  return gl_sframe(raw_ranks);
+}
+
+
+
+gl_sframe recsys_model_base::api_get_similar_users(gl_sarray users, size_t k, int get_all_users) const {
+
+
+  turi::timer timer;
+
+  auto users_sa = users.materialize_to_sarray();
+
+  if(get_all_users) {
+    users_sa.reset();
+  }
+
+  timer.start();
+
+  sframe raw_ranks = this->get_similar_users(users_sa, k);
+
+  logprogress_stream << "Getting similar users completed in "
+      << timer.current_time() << "" << std::endl;
+
+  return gl_sframe(raw_ranks);
+}
+
+gl_sframe recsys_model_base::api_predict(gl_sframe data_to_predict, gl_sframe new_user_data, gl_sframe new_item_data) const {
+
+  sframe sf = data_to_predict.materialize_to_sframe();
+
+  // Currently, new_data is ignored, as none of the models use it.
+
+  sframe new_user_data_sf = new_user_data.materialize_to_sframe();
+  sframe new_item_data_sf = new_item_data.materialize_to_sframe();
+
+  sframe predictions = this->predict(this->create_ml_data(sf, new_user_data_sf, new_item_data_sf));
+
+  return predictions;
+}
+
+variant_map_type recsys_model_base::api_get_current_options() {
+
+  std::map<std::string, flexible_type> options = this->get_current_options();
+
+  variant_map_type ret;
+  for (auto& opt : options) {
+    ret[opt.first] = opt.second;
+  }
+  return ret;
+}
+
+
+variant_map_type recsys_model_base::api_set_current_options(std::map<std::string, flexible_type> options) {
+
+  options.erase("model");
+  this->set_options(options);
+
+  return variant_map_type();
+}
+
+void recsys_model_base::api_train(
+    gl_sframe _dataset, gl_sframe _user_data, gl_sframe _item_data,
+    const std::map<std::string, flexible_type>& opts,
+    const variant_map_type& extra_data) {
+
+  sframe dataset = _dataset.materialize_to_sframe();
+  sframe user_data = _user_data.materialize_to_sframe();
+  sframe item_data = _item_data.materialize_to_sframe();
+
+  this->init_options(opts);
+  this->setup_and_train(dataset, user_data, item_data, extra_data);
+
+}
+
+
+gl_sframe recsys_model_base::api_recommend(gl_sframe _query, gl_sframe _exclude, gl_sframe _restrictions, gl_sframe _new_data, gl_sframe _new_user_data,
+  gl_sframe _new_item_data, bool exclude_training_interactions, size_t top_k, double diversity, size_t random_seed) {
+
+  turi::timer timer;
+
+  sframe query_sf = _query.materialize_to_sframe();
+  sframe exclusion_data_sf = _exclude.materialize_to_sframe();
+  sframe restrictions_sf = _restrictions.materialize_to_sframe();
+  sframe new_observation_data_sf = _new_data.materialize_to_sframe();
+  sframe new_user_data_sf = _new_user_data.materialize_to_sframe();
+  sframe new_item_data_sf = _new_item_data.materialize_to_sframe();
+
+  timer.start();
+
+  // Rank items
+  sframe ranks = this->recommend(query_sf,
+                              top_k,
+                              restrictions_sf,
+                              exclusion_data_sf,
+                              new_observation_data_sf,
+                              new_user_data_sf,
+                              new_item_data_sf,
+                              exclude_training_interactions,
+                              diversity,
+                              random_seed);
+
+  logstream(LOG_INFO) << "Ranking completed in " << timer.current_time() << std::endl;
+
+  return gl_sframe(ranks);
+
+}
+
+gl_sframe recsys_model_base::api_precision_recall_by_user(
+    gl_sframe validation_data, 
+    gl_sframe recommend_output,
+    const std::vector<size_t>& cutoffs) {
+
+  const std::string& user_col = metadata->column_name(USER_COLUMN_INDEX);
+  const std::string& item_col = metadata->column_name(ITEM_COLUMN_INDEX);
+
+  validation_data[user_col] = validation_data[user_col].apply(
+      metadata->indexer(USER_COLUMN_INDEX)->indexing_lambda(), flex_type_enum::INTEGER);
+  validation_data[item_col] = validation_data[item_col].apply(
+      metadata->indexer(ITEM_COLUMN_INDEX)->indexing_lambda(), flex_type_enum::INTEGER);
+
+  recommend_output[user_col] = recommend_output[user_col].apply(
+      metadata->indexer(USER_COLUMN_INDEX)->indexing_lambda(), flex_type_enum::INTEGER);
+  recommend_output[item_col] = recommend_output[item_col].apply(
+      metadata->indexer(ITEM_COLUMN_INDEX)->indexing_lambda(), flex_type_enum::INTEGER);
+
+  gl_sframe stats = gl_sframe(precision_recall_stats(
+        validation_data.materialize_to_sframe(),
+        recommend_output.materialize_to_sframe(), cutoffs));
+
+  stats[user_col] = stats[user_col].apply(
+     metadata->indexer(USER_COLUMN_INDEX)->deindexing_lambda(), 
+     metadata->column_type(USER_COLUMN_INDEX));
+
+  stats.materialize();
+
+  return stats;
+}
+
+variant_map_type recsys_model_base::api_get_data_schema() {
+
+  variant_map_type ret;
+  ret["schema"] = this->get_data_schema();
+
+  return ret;
+}
+
+variant_map_type recsys_model_base::summary() {
+
+  variant_map_type ret;
+  for (auto& opt : this->get_current_options()) {
+    ret[opt.first] = opt.second;
+  }
+  for (auto& opt : this->get_train_stats()) {
+    ret[opt.first] = opt.second;
+  }
+
+  return ret;
+}
+
+EXPORT variant_map_type train_test_split(gl_sframe _dataset,
+                                         const std::string& user_column,
+                                         const std::string& item_column,
+                                         flexible_type max_num_users,
+                                         double item_test_proportion,
+                                         size_t random_seed) {
+  variant_map_type ret;
+  sframe dataset = _dataset.materialize_to_sframe();
+  size_t max_users = (max_num_users == FLEX_UNDEFINED) ? std::numeric_limits<size_t>::max() : size_t(max_num_users);
+
+  auto train_test = make_recsys_train_test_split(dataset, user_column, item_column,
+                                                 max_users,
+                                                 item_test_proportion,
+                                                 random_seed);
+
+  ret["train"] = to_variant(gl_sframe(train_test.first));
+  ret["test"] = to_variant(gl_sframe(train_test.second));
+  return ret;
+
+}
+
+
+
+
+
+BEGIN_FUNCTION_REGISTRATION
+REGISTER_FUNCTION(train_test_split, "data", "user_column", "item_column", "max_num_users", "item_test_proportion", "random_seed") 
+END_FUNCTION_REGISTRATION
 
 }}
 

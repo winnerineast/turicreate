@@ -1,11 +1,4 @@
-make_library(minipsutil
+make_library(minipsutil OBJECT
   SOURCES
-  minipsutil.c SHARED
-    EXTERNAL_VISIBILITY
-  )
-
-make_library(minipsutil_static
-  SOURCES
-  minipsutil.c 
-  )
-
+    minipsutil.c 
+)

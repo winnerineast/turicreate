@@ -296,7 +296,6 @@ void basic_column_statistics::_finalize_threadlocal(
         for(size_t src_idx = 0; src_idx < by_thread_mean_var_acc.size(); ++src_idx) {
 
           const auto& mean_std_v = by_thread_mean_var_acc[src_idx];
-          const auto& local_counts = by_thread_element_counts[src_idx]; 
 
           for(size_t i = start_idx; i < std::min(mean_std_v.size(), end_idx); ++i) {
 
@@ -631,6 +630,18 @@ void basic_column_statistics::load_version(turi::iarchive& iarc, size_t version)
 
 }
 
+/** Create a copy with the index cleared.
+ */
+std::shared_ptr<column_statistics> basic_column_statistics::create_cleared_copy() const {
+ auto ret = std::make_shared<basic_column_statistics>(*this);
+
+ ret->counts.clear();
+ ret->statistics.clear();
+
+ return ret; 
+}
+
+
 /** One way to set the statistics.  Used by the serialization converters.
  *
  *  "counts" -- std::vector<size_t>.  Counts.
@@ -675,6 +686,4 @@ void basic_column_statistics::set_data(const std::map<std::string, variant_type>
     total_row_count = variant_get_value<size_t>(params.at("total_row_count"));
   }
 }
-
-
 }}}

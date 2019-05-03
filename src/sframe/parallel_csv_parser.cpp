@@ -23,13 +23,67 @@
 #include <fileio/fs_utils.hpp>
 #include <cppipc/server/cancel_ops.hpp>
 #include <sframe/sframe_constants.hpp>
+#include <util/dense_bitset.hpp>
 
 namespace turi {
 
 using fileio::file_status;
 
 /**
- * Code from 
+ * Escape BOMs
+ */
+void skip_BOM(general_ifstream& fin) {
+  char fChar, sChar, tChar;
+  size_t count = 0;
+  fChar = fin.get();
+  count = fin.gcount();
+  if (!fin.good()) {
+    if (count == 1) {
+      fin.putback(fChar);
+      fin.clear(std::ios_base::goodbit);
+    } else {
+      DASSERT_EQ(count, 0);
+    }
+    return;
+  }
+  DASSERT_EQ(count, 1);
+  sChar = fin.get();
+  count = fin.gcount();
+  if (!fin.good()) {
+    fin.clear(std::ios_base::goodbit);
+    if (count == 1) {
+      fin.putback(sChar);
+    } else {
+      DASSERT_EQ(count, 0);
+    }
+    fin.putback(fChar);
+    return;
+  }
+  DASSERT_EQ(count, 1);
+  tChar = fin.get();
+  count = fin.gcount();
+  if (fin.bad() || count == 0) {
+    fin.clear(std::ios_base::goodbit);
+    if (count == 1) {
+      fin.putback(tChar);
+    } else {
+      DASSERT_EQ(count, 0);
+    }
+    fin.putback(sChar);
+    fin.putback(fChar);
+    return;
+  }
+  DASSERT_EQ(count, 1);
+  bool isBOM = ((fChar == (char)0xEF) && (sChar == (char)0xBB) && (tChar == (char)0xBF));
+  if (!isBOM) {
+    fin.putback(tChar);
+    fin.putback(sChar);
+    fin.putback(fChar);
+  }
+}
+
+/**
+ * Code from
  * http://stackoverflow.com/questions/6089231/getting-std-ifstream-to-handle-lf-cr-and-crlf
  *
  * A getline implementation which supports '\n', '\r' and '\r\n'
@@ -70,13 +124,13 @@ std::istream& eol_safe_getline(std::istream& is, std::string& t) {
 /**
  * Reads until the eol string is encountered
  */
-std::istream& custom_eol_getline(std::istream& is, 
-                                 std::string& t, 
+std::istream& custom_eol_getline(std::istream& is,
+                                 std::string& t,
                                  const std::string& eol) {
   t.clear();
   if (eol.empty()) {
     // read the entire stream
-    t = std::string(std::istreambuf_iterator<char>(is), 
+    t = std::string(std::istreambuf_iterator<char>(is),
                     std::istreambuf_iterator<char>());
     return is;
   } else {
@@ -108,12 +162,12 @@ std::istream& custom_eol_getline(std::istream& is,
 }
 
 /**
- * if eol == "\n", this will get read a line until the next 
+ * if eol == "\n", this will get read a line until the next
  * "\n", "\r" or "\r\n" sequence.
  * Otherwise, it will read until the eol string appears
  */
-std::istream& eol_getline(std::istream& is, 
-                          std::string& t, 
+std::istream& eol_getline(std::istream& is,
+                          std::string& t,
                           const std::string& eol) {
   if (eol == "\n") {
     return eol_safe_getline(is, t);
@@ -138,11 +192,11 @@ class parallel_csv_parser {
    *                     the type of each column. Generally this should the same
    *                     number of columns as in the CSV. If only a subset if
    *                     (say 3 out of 4) columns are to be stored, this should
-   *                     contain the types of the output columns, and 
+   *                     contain the types of the output columns, and
    *                     column_output_order is used to map the CSV columns to
-   *                     the output columns. 
+   *                     the output columns.
    * \param tokenizer The tokenizer rules to use
-   * \param continue_on_failure Whether to keep going even when an error is 
+   * \param continue_on_failure Whether to keep going even when an error is
    *                            encountered.
    * \param store_errors Whether to store bad lines in a separate SArray
    * \param row_limit Maximum number of rows to read
@@ -151,30 +205,30 @@ class parallel_csv_parser {
    *                     if output_order[i] == -1, the column is ignored.
    *                     If output_order is empty (default), this is equivalent
    *                     to the having output_order[i] == i.
-   * \param num_threads Amount of parallelism to use. 
+   * \param num_threads Amount of parallelism to use.
    */
-  parallel_csv_parser(std::vector<flex_type_enum> column_types, 
+  parallel_csv_parser(std::vector<flex_type_enum> column_types,
                       csv_line_tokenizer tokenizer,
                       bool continue_on_failure,
                       bool store_errors,
                       size_t row_limit,
                       std::vector<size_t> column_output_order = std::vector<size_t>(),
                       size_t num_threads = thread_pool::get_instance().size()):
-      nthreads(std::max<size_t>(num_threads, 2) - 1), 
-      parsed_buffer(nthreads), parsed_buffer_last_elem(nthreads), 
-      writing_buffer(nthreads), writing_buffer_last_elem(nthreads), 
+      nthreads(std::max<size_t>(num_threads, 2) - 1),
+      parsed_buffer(nthreads), parsed_buffer_last_elem(nthreads),
+      writing_buffer(nthreads), writing_buffer_last_elem(nthreads),
       error_buffer(nthreads), writing_error_buffer(nthreads),
-      thread_local_tokenizer(nthreads, tokenizer), 
-    read_group(thread_pool::get_instance()), 
+      thread_local_tokenizer(nthreads, tokenizer),
+    read_group(thread_pool::get_instance()),
     write_group(thread_pool::get_instance()), column_types(column_types),
     column_output_order(column_output_order),
-    row_limit(row_limit), 
-    continue_on_failure(continue_on_failure), 
+    row_limit(row_limit),
+    continue_on_failure(continue_on_failure),
     store_errors(store_errors),
     line_terminator(tokenizer.line_terminator),
     is_regular_line_terminator(line_terminator == "\n") {
     };
-  
+
   /**
    * Sets the total size of all inputs. Required if multiple output segments
    * are desired. Otherwise all outputs will go to segment 0.
@@ -185,22 +239,22 @@ class parallel_csv_parser {
   /**
    * Parses an input file into an output frame
    */
-  void parse(general_ifstream& fin, 
-             sframe& output_frame, 
+  void parse(general_ifstream& fin,
+             sframe& output_frame,
              sarray<flexible_type>& errors) {
     size_t num_output_segments = output_frame.num_segments();
     size_t current_input_file_size = fin.file_size();
     try {
       timer ti;
       bool fill_buffer_is_good = true;
-      while(fin.good() && fill_buffer_is_good && 
-            (row_limit == 0 || lines_read.value < row_limit)) { 
+      while(fin.good() && fill_buffer_is_good &&
+            (row_limit == 0 || lines_read.value < row_limit)) {
         fill_buffer_is_good = fill_buffer(fin);
         if (buffer.size() == 0) break;
 
         // if there is no line terminator, we should pick up the entire file.
         if (line_terminator.empty()) while(fill_buffer(fin));
-        parallel_parse();
+        parallel_parse(!fin.good());
         /**************************************************************************/
         /*                                                                        */
         /*      This handles the end of the buffer which needs to be joined       */
@@ -234,10 +288,10 @@ class parallel_csv_parser {
         if (total_input_file_sizes > 0) {
           // compute the current output segment
           // It really is simply.
-          // current_output_segment = 
-          //         (fin.get_bytes_read() + cumulative_file_read_sizes) 
+          // current_output_segment =
+          //         (fin.get_bytes_read() + cumulative_file_read_sizes)
           //          * num_output_segments / total_input_file_sizes;
-          // But a lot of sanity checking is required because 
+          // But a lot of sanity checking is required because
           //  - fin.get_bytes_read() may fail.
           //  - files on disk may change after I last computed the file sizes, so
           //    there is no guarantee that cumulatively, they will all add up.
@@ -252,7 +306,7 @@ class parallel_csv_parser {
             read_pos += cumulative_file_read_sizes;
           }
           next_output_segment = read_pos * num_output_segments / total_input_file_sizes;
-          // sanity boundary check 
+          // sanity boundary check
           if (next_output_segment >= num_output_segments) next_output_segment = num_output_segments - 1;
           // we never go back
           current_output_segment = std::max(current_output_segment, next_output_segment);
@@ -275,9 +329,9 @@ class parallel_csv_parser {
 
       cumulative_file_read_sizes += current_input_file_size;
     } catch (...) {
-      try { read_group.join(); } catch (...) { } 
-      try { write_group.join(); } catch (...) { } 
-      // even on a failure, we still increment the cumulative read count 
+      try { read_group.join(); } catch (...) { }
+      try { write_group.join(); } catch (...) { }
+      // even on a failure, we still increment the cumulative read count
       cumulative_file_read_sizes += current_input_file_size;
       throw;
     }
@@ -292,7 +346,7 @@ class parallel_csv_parser {
 
   /**
    * Returns the number of CSV lines read
-   */  
+   */
   size_t num_lines_read() const {
     return lines_read.value;
   }
@@ -304,7 +358,7 @@ class parallel_csv_parser {
     if (column_output_order.empty()) return column_types.size();
     else return column_output_order.size();
   }
-  
+
   /**
    * Returns the number of output columns in the CSV file
    */
@@ -345,6 +399,8 @@ class parallel_csv_parser {
   std::vector<csv_line_tokenizer> thread_local_tokenizer;
   /// shared buffer
   std::string buffer;
+  /// Same length as buffer. marks if a part of the buffer is in a quoted string
+  dense_bitset quote_parity;
   /// Reading thread pool
   parallel_task_queue read_group;
   /// writing thread pool
@@ -372,7 +428,7 @@ class parallel_csv_parser {
 
   inline bool is_end_line_str(char* c, char* cend) const {
     if (is_regular_line_terminator) return (*c) == '\n' || (*c) == '\r';
-    else if (line_terminator.empty() == false && 
+    else if (line_terminator.empty() == false &&
              cend - c >= (int)(line_terminator.length())) {
       for (char nl : line_terminator) {
         if (nl != (*c)) return false;
@@ -400,7 +456,7 @@ class parallel_csv_parser {
            newline_was_matched = true;
            return c + 1;
          } else if ((*c) == '\r') {
-           // its a \r. It could be just a \r, or a \r\n. 
+           // its a \r. It could be just a \r, or a \r\n.
            // check for \r\n
            if (c + 1 < cend && (*(c+1)) == '\n') {
              // its a \r\n, advance past and return
@@ -429,9 +485,28 @@ class parallel_csv_parser {
         }
         ++c;
       }
-    } 
+    }
     newline_was_matched = false;
     return cend;
+  }
+  // same as advance_past_newline, but checks the quote_parity
+  // to make sure we are only handling true new lines
+  char* advance_past_newline_with_quote_parity(char* bufstart, char* c, char* cend, 
+                                               bool& newline_was_matched) const {
+    newline_was_matched = false;
+    while(c != cend) {
+      c = advance_past_newline(c, cend, newline_was_matched);
+      bool b = quote_parity.get(c - bufstart - 1);
+      // it is not actually a newline if the quote parity is set
+      // continue to continue searching for the next newline
+      if (b && newline_was_matched) {
+        newline_was_matched = false;
+        continue;
+      } else {
+        break;
+      }
+    }
+    return c;
   }
 
   /// parses the line between pstart to pnext, using threadid's buffer
@@ -448,13 +523,13 @@ class parallel_csv_parser {
         local_tokens[i].reset(column_types[i]);
       }
     }
-    const std::vector<size_t>* ptr_to_output_order = 
+    const std::vector<size_t>* ptr_to_output_order =
         column_output_order.empty() ? nullptr : &column_output_order;
 
-    size_t num_tokens_parsed = 
+    size_t num_tokens_parsed =
         thread_local_tokenizer[threadid].
         tokenize_line(pstart, pnext - pstart,
-                      local_tokens, 
+                      local_tokens,
                       true /*permit undefined*/,
                       ptr_to_output_order);
 
@@ -471,20 +546,31 @@ class parallel_csv_parser {
         if (store_errors) error_buffer[threadid].push_back(badline);
         if (continue_on_failure) {
           if (num_failures.value < 10) {
-            std::string badline = std::string(pstart, pnext - pstart);
-            if (badline.length() > 256) badline=badline.substr(0, 256) + "...";
-            logprogress_stream << std::string("Unable to parse line \"") + 
-                               badline + "\"" << std::endl;
+            if (!thread_local_tokenizer[threadid].get_last_parse_error_diagnosis().empty()) {
+              logprogress_stream << thread_local_tokenizer[threadid].get_last_parse_error_diagnosis() 
+                                 << std::endl;
+            } else {
+              std::string badline = std::string(pstart, pnext - pstart);
+              if (badline.length() > 256) badline=badline.substr(0, 256) + "...";
+              logprogress_stream << std::string("Unable to parse line \"") +
+                                 badline + "\"" << std::endl;
+            }
           }
           ++num_failures;
         } else {
-          log_and_throw(std::string("Unable to parse line \"") + 
-                        std::string(pstart, pnext - pstart) + "\"\n" +
-                        "Set error_bad_lines=False to skip bad lines");
+          if (!thread_local_tokenizer[threadid].get_last_parse_error_diagnosis().empty()) {
+            logprogress_stream << thread_local_tokenizer[threadid].get_last_parse_error_diagnosis() 
+                               << std::endl;
+          } 
+          std::string badline = std::string(pstart, pnext - pstart);
+          if (badline.length() > 256) badline=badline.substr(0, 256) + "...";
+          log_and_throw(std::string("Unable to parse line \"") +
+                        badline + "\"\n");
         }
-      } 
-    } 
+      }
+    }
   }
+
   /**
    * Performs the parse on a section of the buffer (threadid in nthreads)
    * adding new rows into the parsed_buffer.
@@ -500,7 +586,7 @@ class parallel_csv_parser {
     if (threadid == nthreads - 1) pend = bufend;
 
     // ok, this is important. Pay attention.
-    // We are sweeping from 
+    // We are sweeping from
     //  - the first line which begins AFTER pstart, but before pend
     //  - And we are finishing on the last line which ends AFTER pend.
     // (if we are the last thread, something special happens and
@@ -515,10 +601,10 @@ class parallel_csv_parser {
     //  hello, world abcd
     //  1, 2 abcd
     //  3, 4 abcd
-    //  
+    //
     //  Then whichever range includes a "d" handles the line after that.
     //
-    //  This is a little subtle when the line_terminator may be multiple 
+    //  This is a little subtle when the line_terminator may be multiple
     //  characters.
     //
 
@@ -531,23 +617,23 @@ class parallel_csv_parser {
     bool start_position_found = (threadid == 0);
     if (threadid > 0) {
       // find the first line beginning after pstart but before pend
-      
-      // if we have a multicharacter line terminator, we have to be a bit 
-      // intelligent. to match the "last character" of the terminator, 
-      // we need to shift the newline search backwards by 
+
+      // if we have a multicharacter line terminator, we have to be a bit
+      // intelligent. to match the "last character" of the terminator,
+      // we need to shift the newline search backwards by
       // line_terminator.length() - 1 characters
-      if (!is_regular_line_terminator && 
+      if (!is_regular_line_terminator &&
           line_terminator.length() > 1 &&
           // make sure there is enough room to shift backwards
-          pstart - bufstart >= int(line_terminator.length() - 1)) { 
+          pstart - bufstart >= int(line_terminator.length() - 1)) {
         pstart -= line_terminator.length() - 1;
       }
       bool newline_was_matched;
-      pstart = advance_past_newline(pstart, pend, newline_was_matched);
+      pstart = advance_past_newline_with_quote_parity(bufstart, pstart, pend, newline_was_matched);
       if (newline_was_matched) {
         start_position_found = true;
       }
-    } 
+    }
     if (start_position_found) {
       /**************************************************************************/
       /*                                                                        */
@@ -555,14 +641,14 @@ class parallel_csv_parser {
       /*                                                                        */
       /**************************************************************************/
       // find the end position
-      if (!is_regular_line_terminator && 
+      if (!is_regular_line_terminator &&
           line_terminator.length() > 1 &&
           // make sure there is enough room to shift backwards
-          pend - bufstart >= int(line_terminator.length() - 0)) { 
+          pend - bufstart >= int(line_terminator.length() - 0)) {
         pend -= line_terminator.length() - 1;
       }
-      bool newline_was_matched_unused;
-      pend = advance_past_newline(pend, bufend, newline_was_matched_unused);
+      bool newline_was_matched_unused = false;
+      pend = advance_past_newline_with_quote_parity(bufstart, pend, bufend, newline_was_matched_unused);
       // make a thread local parsed tokens set
       /**************************************************************************/
       /*                                                                        */
@@ -572,7 +658,7 @@ class parallel_csv_parser {
       char* pnext = pstart;
 
       // the rule that every line must end with a terminator is wrong when
-      // the line terminator is empty. some special handling is needed for this 
+      // the line terminator is empty. some special handling is needed for this
       // case.
       if (line_terminator.empty()) {
         parse_line(pstart, pend, threadid);
@@ -581,10 +667,10 @@ class parallel_csv_parser {
           // search for a new line
           // This can be massively optimized in the general case of interesting
           // end line characters using Robin Karp or KMP.
-          if (is_end_line_str(pnext, pend)) {
+          if (is_end_line_str(pnext, pend) && quote_parity.get(pnext - bufstart) == false) {
             // parse pstart until pnext
             parse_line(pstart, pnext, threadid);
-            pnext = advance_past_newline(pnext, pend, newline_was_matched_unused);
+            pnext = advance_past_newline_with_quote_parity(bufstart, pnext, pend, newline_was_matched_unused);
             pstart = pnext;
           } else {
             ++pnext;
@@ -596,17 +682,17 @@ class parallel_csv_parser {
   }
 
   /**
-   * Adds a line terminator to the buffer if it does not already 
-   * end with a line terminator. Used by the buffer reading routines on 
+   * Adds a line terminator to the buffer if it does not already
+   * end with a line terminator. Used by the buffer reading routines on
    * EOF so that the parser is always guaranteed that every line
-   * ends with a line terminator, even the last line. 
+   * ends with a line terminator, even the last line.
    */
   void add_line_terminator_to_buffer() {
-    if (is_regular_line_terminator && 
-        buffer[buffer.length() - 1] != '\n' && 
+    if (is_regular_line_terminator &&
+        buffer[buffer.length() - 1] != '\n' &&
         buffer[buffer.length() - 1] != '\r') {
       buffer.push_back('\n');
-    } else if (!is_regular_line_terminator && 
+    } else if (!is_regular_line_terminator &&
                buffer.length() >= line_terminator.length() &&
                buffer.substr(buffer.length() - line_terminator.length()) != line_terminator) {
       buffer += line_terminator;
@@ -640,16 +726,161 @@ class parallel_csv_parser {
   }
 
   /**
+   * to handle CSV lines which span multiple lines, this happens in particular
+   * when we have quoted line terminators. For instance a CSV might be of the
+   * form
+   *  
+   * user_id, review
+   * 123, "good food"
+   * 456, "hello
+   * world"
+   * 678, "moof"
+   *  
+   * In this case, "hello\nworld" spans a line.
+   * 
+   * However, this gets complicated with the buffer splitting algorithm which
+   * takes a large contiguous buffer and tries to cut it up into #thread chunks.
+   * Each chunk must span a complete set of lines. See \ref parse_thread
+   * for details.
+   * 
+   * To fix this behavior, we need to be able to mark which line_terminator 
+   * positions are *really* line terminators and which are sitting within quotes.
+   * Note that there are a variety of quoting rules we need to be able to handle.
+   * 
+   * To do this, we pay for one pass through the buffer counting quote characters
+   * and marking all the "valid" newline positions.
+   *
+   * This is essentially a "parity" problem. we need to know at each
+   * character position in the buffer, if we are in a quoted string or not.
+   *
+   * This uses the information in \ref tokenizer to get the quoting rules.
+   * Of the csv rules, we can ignore double_quote, (adjacent quote chars 
+   * just flips the parity back and forth). Rules which affect are  
+   * quote_char, escape_char, comment_char, has_comment_char.
+   *
+   * comment_char is quite hard...
+   *
+   * This function reads the variable \ref buffer and fills \ref quote_parity.
+   */
+  void find_true_new_line_positions() {
+    quote_parity.resize(buffer.size());
+    quote_parity.clear();
+
+    // if the prev char is not an escape char.
+    // this seems like not very natural instead of is_esc. but this
+    // saves a negation every loop iteration.
+    bool not_esc = true; 
+    csv_line_tokenizer& tokenizer = thread_local_tokenizer[0];
+    const char escape_char = tokenizer.escape_char;
+    const char quote_char = tokenizer.quote_char;
+    const char comment_char = tokenizer.comment_char;
+    bool cur_in_quote = false;
+
+    int idx = 0;
+    const char* __restrict__ buf = &(buffer[0]);
+    const char* __restrict__ bufend = &(buffer[0]) + buffer.size();
+    if (tokenizer.has_comment_char) {
+      // with comment char we need to do a bit more work.
+      while(buf != bufend) {
+        // fast path. quickly scan through the buffer while I don't see special
+        // characters
+        if (not_esc) {
+          while(buf != bufend && 
+                (*(buf) != comment_char) && 
+                (*(buf) != quote_char) && 
+                (*(buf) != escape_char)) {
+            ++buf;
+          }
+          int endidx = buf - &(buffer[0]);
+          if (cur_in_quote) {
+            // if in_quote we need to flag all the quote_parity bits
+            while(idx < endidx) {
+              quote_parity.set_bit_unsync(idx);
+              ++idx;
+            }
+          } else {
+            idx = endidx;
+          }
+          if (buf == bufend) break;
+          // continue for slow path handling
+        }
+        const char c = (*buf);
+        if (c == comment_char && not_esc && cur_in_quote == false) {
+          // skip to next newline 
+          bool newline_was_matched = false;
+          const char* initial_buf = buf;
+          buf = advance_past_newline((char*)buf, (char*)bufend, newline_was_matched);
+          idx += buf - initial_buf;
+          if (newline_was_matched == false) break;
+          else continue;
+        }
+        bool is_quote_char = (c == quote_char) && not_esc;
+        cur_in_quote ^= is_quote_char;
+        quote_parity.set_unsync(idx, cur_in_quote);
+        // invert of the following
+        // if (!esc) esc = c == escape_char
+        // else esc = false
+        not_esc = !not_esc || c != escape_char;
+        ++idx; ++buf;
+      }
+    } else {
+      // without comment char this is simpler.
+      while(buf != bufend) {
+        // fast path. quickly scan through the buffer while I don't see special
+        // characters
+        if (not_esc) {
+          while(buf != bufend && 
+                (*(buf) != quote_char) && 
+                (*(buf) != escape_char)) {
+            ++buf;
+          }
+          int endidx = buf - &(buffer[0]);
+          if (cur_in_quote) {
+            // if in_quote we need to flag all the quote_parity bits
+            while(idx < endidx) {
+              quote_parity.set_bit_unsync(idx);
+              ++idx;
+            }
+          } else {
+            idx = endidx;
+          }
+          if (buf == bufend) break;
+          // continue for slow path handling
+        }
+        const char c = (*buf);
+        bool is_quote_char = (c == quote_char) && not_esc;
+        cur_in_quote ^= is_quote_char;
+        quote_parity.set_unsync(idx, cur_in_quote);
+        // invert of the following
+        // if (!esc) esc = c == escape_char
+        // else esc = false
+        not_esc = !not_esc || c != escape_char;
+        ++idx; ++buf;
+      }
+    }
+  }
+
+  /**
    * Performs a parallel parse of the contents of the buffer, adding to
    * parsed_buffer.
+   *
+   * \param eof Flags if this is the last buffer. If it is, we get a little
+   *            more aggressive at making sure we consume everything and
+   *            not leave unparsed stuff.
    */
-  void parallel_parse() {
+  void parallel_parse(bool eof) {
     // take a pointer to the last token that has been succesfully parsed.
     // this will tell me how much buffer I need to shift to the next read.
     // parse buffer in parallel
     mutex last_parsed_token_lock;
     char* last_parsed_token = &(buffer[0]);
-    
+
+    find_true_new_line_positions();
+    if (eof && buffer.size() > 0) {
+      // the last newline is *always* of the right parity
+      quote_parity.clear_bit_unsync(buffer.size() - 1);
+    }
+
     for (size_t threadid = 0; threadid < nthreads; ++threadid) {
       read_group.launch(
           [=,&last_parsed_token_lock,&last_parsed_token](void) {
@@ -668,13 +899,13 @@ class parallel_csv_parser {
   }
 
   /**
-   * Spins up a background thread to write parse results from parallel_parse 
-   * to the output frame. First the parsed_buffer is swapped into the 
+   * Spins up a background thread to write parse results from parallel_parse
+   * to the output frame. First the parsed_buffer is swapped into the
    * writing_buffer, thus permitting the parsed_buffer to be used again in
    * a different thread.
    */
-  void start_background_write(sframe& output_frame, 
-                              sarray<flexible_type>& errors_array, 
+  void start_background_write(sframe& output_frame,
+                              sarray<flexible_type>& errors_array,
                               size_t output_segment) {
     // switch the parse buffer with the write buffer
     writing_buffer.swap(parsed_buffer);
@@ -688,17 +919,17 @@ class parallel_csv_parser {
     write_group.launch([&, output_segment] {
         auto iter = output_frame.get_output_iterator(output_segment);
         for (size_t i = 0; i < writing_buffer.size(); ++i) {
-          std::copy(writing_buffer[i].begin(), 
+          std::copy(writing_buffer[i].begin(),
                     writing_buffer[i].begin() + writing_buffer_last_elem[i], iter);
           lines_read.inc(writing_buffer_last_elem[i]);
         }
-        if (store_errors) { 
+        if (store_errors) {
           auto errors_iter = errors_array.get_output_iterator(0);
           for (auto& chunk_errors : writing_error_buffer) {
             std::copy(chunk_errors.begin(), chunk_errors.end(), errors_iter);
             chunk_errors.clear();
           }
-        }        
+        }
         background_thread_running = false;
       });
   }
@@ -718,12 +949,12 @@ class parallel_csv_parser {
  *
  * e.g.
  * {"A", "A", "A.1"} --> {"A", "A.2", "A.1"}
- * 
+ *
  * \param column_names The set of column names to be renamed. The vector
  *                     will be modified in place.
  */
 void make_unique_column_names(std::vector<std::string>& column_names) {
-  // this is the set of column names to the left of the column we 
+  // this is the set of column names to the left of the column we
   // are current inspected. i.e. these column names are already validated to
   // be correct.
   log_func_entry();
@@ -738,7 +969,7 @@ void make_unique_column_names(std::vector<std::string>& column_names) {
       // already exists.
       std::set<std::string> all_column_names(column_names.begin(),
                                              column_names.end());
-      // start incrementing at A.1, A.2, etc. 
+      // start incrementing at A.1, A.2, etc.
       size_t number = 1;
       std::string new_column_name;
       while(1) {
@@ -783,6 +1014,7 @@ void read_csv_header(csv_info& info,
   if (!probe_fin.good()) {
     log_and_throw("Fail reading " + sanitize_url(path));
   }
+  skip_BOM(probe_fin);
 
   // skip skip_rows lines
   std::string skip_string;
@@ -794,8 +1026,8 @@ void read_csv_header(csv_info& info,
   while (first_line_tokens.size() == 0 && probe_fin.good()) {
     eol_getline(probe_fin, first_line, tokenizer.line_terminator);
     boost::algorithm::trim(first_line);
-    tokenizer.tokenize_line(&(first_line[0]), 
-                            first_line.length(), 
+    tokenizer.tokenize_line(&(first_line[0]),
+                            first_line.length(),
                             first_line_tokens);
   }
 
@@ -829,7 +1061,7 @@ void read_csv_header(csv_info& info,
 /* - column_types.size() == column_names.size() == ncols                  */
 /*                                                                        */
 /**************************************************************************/
-void get_column_types(csv_info& info, 
+void get_column_types(csv_info& info,
                       std::map<std::string, flex_type_enum> column_type_hints) {
   info.column_types.resize(info.ncols, flex_type_enum::STRING);
 
@@ -838,7 +1070,7 @@ void get_column_types(csv_info& info,
   } else if (column_type_hints.count("__X0__")) {
     if (column_type_hints.size() != info.column_types.size()) {
       std::stringstream warning_msg;
-      warning_msg << "column_type_hints has different size from actual number of columns: " 
+      warning_msg << "column_type_hints has different size from actual number of columns: "
                   << "column_type_hints.size()=" << column_type_hints.size()
                   << ";number of columns=" << info.ncols
                   << std::endl;
@@ -874,18 +1106,19 @@ void get_column_types(csv_info& info,
 
 } // anonymous namespace
 
+
 /**
  * Parsed a CSV file to an SFrame.
  *
  * \param path The file to open as a csv
- * \param tokenizer The tokenizer configuration to use. This should be 
+ * \param tokenizer The tokenizer configuration to use. This should be
  *                  filled with all the tokenization rules (like what
- *                  separator character to use, what quoting character to use, 
+ *                  separator character to use, what quoting character to use,
  *                  etc.)
  * \param writer The sframe writer to use.
- * \param frame_sidx_file Where to write the frame to 
+ * \param frame_sidx_file Where to write the frame to
  * \param parallel_csv_parser A parallel_csv_parser
- * \param errors A reference to a map in which to store an sarray of bad lines 
+ * \param errors A reference to a map in which to store an sarray of bad lines
  * for each input file.
  */
 void parse_csv_to_sframe(
@@ -907,6 +1140,7 @@ void parse_csv_to_sframe(
   {
     general_ifstream fin(path);
     if (!fin.good()) log_and_throw("Cannot open " + sanitize_url(path));
+    skip_BOM(fin);
 
     // skip skip_rows lines
     std::string skip_string;
@@ -914,7 +1148,7 @@ void parse_csv_to_sframe(
       eol_getline(fin, skip_string, tokenizer.line_terminator);
     }
 
-    // if use_header, we keep throwing away empty or comment lines until we 
+    // if use_header, we keep throwing away empty or comment lines until we
     // get one good line
     if (use_header) {
       std::vector<std::string> first_line_tokens;
@@ -924,16 +1158,16 @@ void parse_csv_to_sframe(
         eol_getline(fin, line, tokenizer.line_terminator);
         tokenizer.tokenize_line(&(line[0]), line.length(), first_line_tokens);
       }
-      // if we are going to store errors, we don't do early skippng on 
+      // if we are going to store errors, we don't do early skippng on
       // mismatched files
-      if (!store_errors && 
+      if (!store_errors &&
           first_line_tokens.size() != parser.num_input_columns()) {
         logprogress_stream << "Unexpected number of columns found in " << path
                            << ". Skipping this file." << std::endl;
         return;
       }
     }
-    
+
     // store errors for this particular file in an sarray
     auto file_errors = std::make_shared<sarray<flexible_type>>();
     if (store_errors) {
@@ -950,8 +1184,8 @@ void parse_csv_to_sframe(
     }
 
     if (continue_on_failure && parser.num_lines_failed() > 0) {
-      logprogress_stream << parser.num_lines_failed() 
-                         << " lines failed to parse correctly" 
+      logprogress_stream << parser.num_lines_failed()
+                         << " lines failed to parse correctly"
                          << std::endl;
     }
 
@@ -980,14 +1214,14 @@ std::map<std::string, std::shared_ptr<sarray<flexible_type>>> parse_csvs_to_sfra
   auto output_columns = options.output_columns;
   auto row_limit = options.row_limit;
   auto skip_rows = options.skip_rows;
-  
+
   if (store_errors) continue_on_failure = true;
-  // otherwise, check that url is valid directory, and get its listing if no 
+  // otherwise, check that url is valid directory, and get its listing if no
   // pattern present
   std::vector<std::string> files;
   bool found_zero_byte_files = false;
   std::vector<std::pair<std::string, file_status>> file_and_status = fileio::get_glob_files(url);
-  
+
   for (auto p : file_and_status) {
     if (p.second == file_status::REGULAR_FILE) {
       // throw away empty files
@@ -1007,7 +1241,7 @@ std::map<std::string, std::shared_ptr<sarray<flexible_type>>> parse_csvs_to_sfra
                               << std::endl;
       }
 
-      logstream(LOG_INFO) << "Adding CSV file " 
+      logstream(LOG_INFO) << "Adding CSV file "
                           << sanitize_url(p.first)
                           << " to list of files to parse"
                           << std::endl;
@@ -1016,7 +1250,7 @@ std::map<std::string, std::shared_ptr<sarray<flexible_type>>> parse_csvs_to_sfra
   }
 
   file_and_status.clear(); // don't need these anymore
-  
+
   // ensure that we actually found some valid files
   if (files.empty()) {
     if (found_zero_byte_files) {
@@ -1056,11 +1290,11 @@ std::map<std::string, std::shared_ptr<sarray<flexible_type>>> parse_csvs_to_sfra
     for (size_t i = 0;i < output_columns.size(); ++i) {
       const auto& outcol = output_columns[i];
       auto iter = std::find(info.column_names.begin(),
-                            info.column_names.end(), 
+                            info.column_names.end(),
                             outcol);
       // Cannot find this column in the talble?
       // is output_columns a positional type? i.e. "X" something
-      if (iter == info.column_names.end() && 
+      if (iter == info.column_names.end() &&
           outcol.length() > 1 && outcol[i] == 'X') {
         size_t colnumber = stoull(outcol.substr(1));
         // column number is 1 based
@@ -1097,8 +1331,8 @@ std::map<std::string, std::shared_ptr<sarray<flexible_type>>> parse_csvs_to_sfra
   if (!frame.is_opened_for_write()) {
     // open as many segments as there are temp directories.
     // But at least one segment
-    frame.open_for_write(info.column_names, info.column_types, 
-                         frame_sidx_file, 
+    frame.open_for_write(info.column_names, info.column_types,
+                         frame_sidx_file,
                          std::max<size_t>(1, num_temp_directories()));
   }
 
@@ -1109,19 +1343,19 @@ std::map<std::string, std::shared_ptr<sarray<flexible_type>>> parse_csvs_to_sfra
   parser.start_timer();
 
   for (auto file : files) {
-    // check that we've read < row_limit  
-    if (parser.num_lines_read() < row_limit || row_limit == 0) {      
-      parse_csv_to_sframe(file, tokenizer, options, frame, 
+    // check that we've read < row_limit
+    if (parser.num_lines_read() < row_limit || row_limit == 0) {
+      parse_csv_to_sframe(file, tokenizer, options, frame,
                           frame_sidx_file, parser, errors);
     } else break;
   }
-  
+
   logprogress_stream << "Parsing completed. Parsed " << parser.num_lines_read()
                      << " lines in " << parser.get_time_elapsed() << " secs."  << std::endl;
 
-  
+
   if (frame.is_opened_for_write()) frame.close();
-  
+
   return errors;
 }
 

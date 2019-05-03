@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <lambda/lambda_constants.hpp>
 #include <shmipc/shmipc.hpp>
+#include <util/sys_util.hpp>
 
 namespace turi { namespace lambda {
 
@@ -43,7 +44,7 @@ static lambda_master* instance_ptr = nullptr;
     if (nworkers < thread::cpu_count()) {
       logprogress_stream << "Using default " << nworkers << " lambda workers.\n";
       logprogress_stream << "To maximize the degree of parallelism, add the following code to the beginning of the program:\n";
-      logprogress_stream << "\"turicreate.set_runtime_config(\'TURI_DEFAULT_NUM_PYLAMBDA_WORKERS\', " << thread::cpu_count() << ")\"\n";
+      logprogress_stream << "\"turicreate.config.set_runtime_config(\'TURI_DEFAULT_NUM_PYLAMBDA_WORKERS\', " << thread::cpu_count() << ")\"\n";
       logprogress_stream << "Note that increasing the degree of parallelism also increases the memory footprint." << std::endl;
     }
 
@@ -83,7 +84,7 @@ static lambda_master* instance_ptr = nullptr;
     std::vector<size_t> returned_hashes = m_worker_pool->call_all_workers<size_t>(make_lambda_fn);
     // validate all worker returns the same hash
     size_t lambda_hash = returned_hashes[0];
-    for (auto& v : returned_hashes) {
+    for (TURI_ATTRIBUTE_UNUSED_NDEBUG auto& v : returned_hashes) {
       DASSERT_MSG(lambda_hash == v,
                   "workers should return the same lambda index");
     }

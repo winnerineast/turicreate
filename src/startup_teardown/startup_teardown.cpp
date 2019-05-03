@@ -14,6 +14,7 @@
 #include <crash_handler/crash_handler.hpp>
 #include <signal.h>
 #endif
+#include <Eigen/Core>
 #include <globals/globals.hpp>
 #include <globals/global_constants.hpp>
 #include <sframe/sframe_constants.hpp>
@@ -25,8 +26,10 @@
 #include <parallel/thread_pool.hpp>
 #include <logger/logger.hpp>
 #include <logger/log_rotate.hpp>
+#ifdef TC_HAS_PYTHON
 #include <lambda/lambda_master.hpp>
 #include <lambda/graph_pylambda_master.hpp>
+#endif
 #include <minipsutil/minipsutil.h>
 
 #include "startup_teardown.hpp"
@@ -215,6 +218,7 @@ void global_startup::perform_startup() {
   if (startup_performed) return;
   startup_performed = true;
   // non turicreate stuff
+  Eigen::initParallel();
   install_sighandlers();
   MEMORY_RELEASE_THREAD = new memory_release_thread();
   MEMORY_RELEASE_THREAD->start();
@@ -248,12 +252,16 @@ void global_teardown::perform_teardown() {
   teardown_performed = true;
   logstream(LOG_INFO) << "Performing teardown" << std::endl;
   try {
+#ifdef TC_HAS_PYTHON
     turi::lambda::lambda_master::shutdown_instance();
     turi::lambda::graph_pylambda_master::shutdown_instance();
+#endif
     MEMORY_RELEASE_THREAD->stop();
     delete MEMORY_RELEASE_THREAD;
     turi::fileio::fixed_size_cache_manager::get_instance().clear();
+#ifdef TC_ENABLE_REMOTEFS
     turi::file_download_cache::get_instance().clear();
+#endif
     turi::block_cache::release_instance();
     turi::reap_current_process_temp_files();
     turi::reap_unused_temp_files();

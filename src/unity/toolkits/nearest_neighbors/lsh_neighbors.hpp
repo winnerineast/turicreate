@@ -7,8 +7,6 @@
 #define TURI_LSH_NEIGHBORS_H_
 
 
-// ML-Data Utils
-
 // Toolkits
 #include <unity/toolkits/nearest_neighbors/nearest_neighbors.hpp>
 #include <unity/toolkits/nearest_neighbors/lsh_family.hpp>
@@ -49,23 +47,13 @@ class EXPORT lsh_neighbors: public nearest_neighbors_model {
   ~lsh_neighbors();
 
   /**
-   * Clone objects to a nearest_neighbors_model class
-   */
-  nearest_neighbors_model* nearest_neighbors_clone();
-
-  /**
-   * Return the name of the model.
-   */
-  std::string name();
-
-  /**
    * Set the model options. Use the option manager to set these options. The
    * option manager should throw errors if the options do not satisfy the option
    * manager's conditions.
    *
    * \param[in] opts Options to set 
    */ 
-  void init_options(const std::map<std::string,flexible_type>& _opts);
+  void init_options(const std::map<std::string,flexible_type>& _opts) override;
 
   /**
    * Create a LSH nearest neighbors model.
@@ -77,7 +65,7 @@ class EXPORT lsh_neighbors: public nearest_neighbors_model {
    */
   void train(const sframe& X, const std::vector<flexible_type>& ref_labels,
              const std::vector<dist_component_type>& composite_distance_params,
-             const std::map<std::string, flexible_type>& opts);
+             const std::map<std::string, flexible_type>& opts) override;
 
   /**
    * Find neighbors of queries in a created LSH model.
@@ -101,25 +89,30 @@ class EXPORT lsh_neighbors: public nearest_neighbors_model {
   sframe query(const v2::ml_data& mld_queries, 
                const std::vector<flexible_type>& query_labels,
                const size_t k, const double radius, 
-               const bool include_self_edges) const;
+               const bool include_self_edges) const override;
   
 
   /**
    * Gets the model version number
    */
-  inline size_t get_version() const {
+  inline size_t get_version() const override {
     return LSH_NEIGHBORS_VERSION;
   }
 
   /**
    * Turi serialization save
    */
-  void save_impl(turi::oarchive& oarc) const;
+  void save_impl(turi::oarchive& oarc) const override;
 
   /**
    * Turi serialization save
    */
-  void load_version(turi::iarchive& iarc, size_t version);
+  void load_version(turi::iarchive& iarc, size_t version) override;
+
+  // TODO: convert interface above to use the extensions methods here
+  BEGIN_CLASS_MEMBER_REGISTRATION("nearest_neighbors_lsh")
+  REGISTER_CLASS_MEMBER_FUNCTION(lsh_neighbors::list_fields)
+  END_CLASS_MEMBER_REGISTRATION
 
  private:
   std::shared_ptr<lsh_family> lsh_model;

@@ -36,12 +36,7 @@ class EXPORT cgs_topic_model : public topic_model {
   /**
    * Clone objects to a topic_model class
    */
-  topic_model* topic_model_clone();
-
-  /**
-   * Return the name of the model.
-   */
-  std::string name();
+  topic_model* topic_model_clone() override;
 
   /**
    * Set the model options. Use the option manager to set these options. The
@@ -50,21 +45,21 @@ class EXPORT cgs_topic_model : public topic_model {
    *
    * \param[in] opts Options to set
    */
-  void init_options(const std::map<std::string,flexible_type>& _opts);
+  void init_options(const std::map<std::string,flexible_type>& _opts) override;
 
-  inline size_t get_version() const {
+  inline size_t get_version() const override {
     return CGS_TOPIC_MODEL_VERSION;
   }
 
   /**
   * Turi serialization save
   */
-  void save_impl(turi::oarchive& oarc) const;
+  void save_impl(turi::oarchive& oarc) const override;
 
   /**
   * Turi serialization save
   */
-  void load_version(turi::iarchive& iarc, size_t version);
+  void load_version(turi::iarchive& iarc, size_t version) override;
 
 
   /**
@@ -93,21 +88,26 @@ class EXPORT cgs_topic_model : public topic_model {
    *   initialization purposes.
    *
    */
-  void train(std::shared_ptr<sarray<flexible_type>> data, bool verbose);
+  void train(std::shared_ptr<sarray<flexible_type>> data, bool verbose) override;
 
   std::shared_ptr<sarray<std::vector<size_t>>>
       forward_sample(const v2::ml_data& d,
                      count_vector_type& topic_counts,
-                     count_matrix_type& topic_doc_counts);
+                     count_matrix_type& doc_topic_counts);
 
   std::map<std::string, size_t>
       sample_counts(const v2::ml_data& d,
                     count_vector_type& topic_counts,
-                    count_matrix_type& topic_doc_counts,
+                    count_matrix_type& doc_topic_counts,
                     std::shared_ptr<sarray<std::vector<size_t>>>& assignments);
 
+  // TODO: convert interface above to use the extensions methods here
+  BEGIN_CLASS_MEMBER_REGISTRATION("cgs_topic_model")
+  REGISTER_CLASS_MEMBER_FUNCTION(cgs_topic_model::list_fields)
+  END_CLASS_MEMBER_REGISTRATION
 
-};
+};  // kmeans_model class
+
 }
 }
 #endif

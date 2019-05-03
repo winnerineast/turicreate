@@ -10,6 +10,7 @@
 #include <cmath>
 #include <type_traits>
 #include <climits>
+#include <util/code_optimization.hpp>
 // #include <bitset>
 // #include <iostream>
 
@@ -121,8 +122,11 @@ static inline void flip_bit(T& x, unsigned int bit, _ENABLE_IF_UINT(T))
  * \param n_bits Index of the bit to flip.
  */
 template <typename T>
-static inline T bit_mask(size_t n_bits, _ENABLE_IF_UINT(T)) {
-  return (T(1) << n_bits) - 1;
+static inline T bit_mask(unsigned int n_bits, _ENABLE_IF_UINT(T)) {
+
+  static constexpr unsigned int _n_mask = ~static_cast<unsigned int>(bitsizeof(T) - 1);
+
+  return UNLIKELY(n_bits & _n_mask) ? T(-1) : (T(1) << n_bits) - 1;
 }
 
 /**
@@ -137,6 +141,10 @@ static inline T bit_mask(size_t index_begin, unsigned int index_end, _ENABLE_IF_
   return bit_mask<T>(index_begin) ^ bit_mask<T>(index_end);
 }
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wshift-count-overflow"
+#endif
 /**
  * Counts the number of bits on in x.
  *
@@ -152,20 +160,25 @@ static inline unsigned int num_bits_on(T v, _ENABLE_IF_UINT(T))
   else if(sizeof(unsigned long long) >= sizeof(T))
     return __builtin_popcountll((unsigned long long)v);
   else if(bitsizeof(unsigned long long) == 64 && bitsizeof(T) == 128)
+  // This errors with error: shift count >= width of type [-Werror,-Wshift-count-overflow]
+  // but, at runtime, we've already checked for that in the else if condition.
     return (__builtin_popcountll((unsigned long long)(v))
-            + __builtin_popcountll((unsigned long long)(v >> 64)));
+            + __builtin_popcountll((unsigned long long)(uint64_t(uint128_t(v) >> 64))));
   else {
     unsigned int bitcount = 0;
     T vt = v;
     for(size_t i = 0; i < bitsizeof(T); i += bitsizeof(unsigned long long) ) {
       bitcount += __builtin_popcountll( (unsigned long long)(vt) );
-      vt >>= bitsizeof(unsigned long long);
+      vt = T(uint128_t(vt) >> bitsizeof(unsigned long long));
     }
 
     return vt;
   }
 }
 
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 template <int n, typename T>
 static inline void __n_trailing_zeros_disect(
     T& v, int& c, _ENABLE_IF_BITSIZE_GT(T, n)) {

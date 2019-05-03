@@ -10,17 +10,16 @@ import sys as _sys
 import tempfile as _tempfile
 import os as _os
 import time as _time
-import logging as _logging
 import re as _re
 
 # Return the root package name
-_root_package_name = __import__(__name__.split('.')[0]).__name__
+_root_package_name = 'turicreate'
 _client_log_file = _os.path.join(_tempfile.gettempdir(),
                                 _root_package_name +
                                 '_client_%d_%d.log' % (_time.time(), _os.getpid()))
 
 def _get_log_location():
-    from ..connect import main as _glconnect
+    from .._connect import main as _glconnect
     server = _glconnect.get_server()
     if hasattr(server, 'unity_log'):
         return server.unity_log
@@ -34,11 +33,13 @@ def _i_am_a_lambda_worker():
 
 def init_logger():
     """
-    Initialize the logging configuration for the turicreate/sframe package.
+    Initialize the logging configuration for the turicreate package.
 
-    This does not affect the logging config of root or other modules outside of
-    turicreate/sframe.
+    This does not affect the root logging config.
     """
+    import logging as _logging
+    import logging.config
+
     # Package level logger
     _logging.config.dictConfig({
         'version': 1,
@@ -126,6 +127,8 @@ def set_num_gpus(num_gpus):
       >> turicreate.config.set_num_gpus(1)
       >> turicreate.image_classifier.create(data, target='label')
     """
+    if(num_gpus < -1):
+        raise ValueError("'num_gpus' must be greater than or equal to -1")
     set_runtime_config('TURI_NUM_GPUS', num_gpus)
 
 
@@ -152,14 +155,25 @@ def get_environment_config():
     -------
     Returns a dictionary of {key:value,..}
     """
-    from ..connect import main as _glconnect
+    from .._connect import main as _glconnect
     unity = _glconnect.get_unity()
     return unity.list_globals(False)
+
+def set_log_level(level):
+    """
+    Sets the log level.
+    Lower log levels log more.
+    if level is 8, nothing is logged. If level is 0, everything is logged.
+    """
+    from .._connect import main as _glconnect
+    unity = _glconnect.get_unity()
+    return unity.set_log_level(level)
+
 
 def get_runtime_config():
     """
     Returns all the Turi Create configuration variables that can be set
-    at runtime. See :py:func:`turicreate.set_runtime_config()` to set these
+    at runtime. See :py:func:`turicreate.config.set_runtime_config()` to set these
     values and for documentation on the effect of each variable.
 
     Returns
@@ -170,7 +184,7 @@ def get_runtime_config():
     --------
     set_runtime_config
     """
-    from ..connect import main as _glconnect
+    from .._connect import main as _glconnect
     unity = _glconnect.get_unity()
     return unity.list_globals(True)
 
@@ -178,7 +192,7 @@ def set_runtime_config(name, value):
     """
     Configures system behavior at runtime. These configuration values are also
     read from environment variables at program startup if available. See
-    :py:func:`turicreate.get_runtime_config()` to get the current values for
+    :py:func:`turicreate.config.get_runtime_config()` to get the current values for
     each variable.
 
     Note that defaults may change across versions and the names
@@ -285,7 +299,7 @@ def set_runtime_config(name, value):
       limit may improve performance (You may also need to increase the system
       file handle limit with "ulimit -n").  Defaults to 128.
     """
-    from ..connect import main as _glconnect
+    from .._connect import main as _glconnect
     unity = _glconnect.get_unity()
     ret = unity.set_global(name, value)
     if ret != "":

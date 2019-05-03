@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
-'''
-Copyright (C) 2015 Dato, Inc.
-All rights reserved.
-This software may be modified and distributed under the terms
-of the BSD license. See the LICENSE file for details.
-'''
-import array
+# Copyright © 2017 Apple Inc. All rights reserved.
+#
+# Use of this source code is governed by a BSD-3-clause license that can
+# be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
 import turicreate
 import logging
 import multiprocessing
@@ -13,8 +10,8 @@ import sys
 import time
 import unittest
 
-from turicreate.connect import main as glconnect
-from turicreate.cython import cy_test_utils
+from turicreate._connect import main as glconnect
+from turicreate._cython import cy_test_utils
 
 def fib(i):
     if i <= 2:
@@ -66,7 +63,7 @@ class LambdaTests(unittest.TestCase):
     @unittest.skip("Disabling crash recovery test")
     def test_crash_recovery(self):
         import time, sys
-        ls = range(1000)
+        ls = list(range(1000))
 
         def good_fun(x):
             return x

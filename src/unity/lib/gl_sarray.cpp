@@ -13,6 +13,8 @@
 #include <sframe/sarray_reader_buffer.hpp>
 #include <unity/lib/image_util.hpp>
 #include <sframe_query_engine/planning/planner.hpp>
+#include <unity/lib/visualization/histogram.hpp>
+#include <unity/lib/visualization/item_frequency.hpp>
 
 namespace turi {
 
@@ -119,7 +121,7 @@ gl_sarray::gl_sarray(const gl_sarray& other) {
   m_sarray = other.get_proxy();
 }
 gl_sarray::gl_sarray(gl_sarray&& other) {
-  m_sarray = std::move(other.get_proxy());
+  m_sarray = other.get_proxy();
 }
 
 gl_sarray::gl_sarray(const std::string& directory) {
@@ -133,7 +135,7 @@ gl_sarray& gl_sarray::operator=(const gl_sarray& other) {
 }
 
 gl_sarray& gl_sarray::operator=(gl_sarray&& other) {
-  m_sarray = std::move(other.get_proxy());
+  m_sarray = other.get_proxy();
   return *this;
 }
 
@@ -164,6 +166,12 @@ gl_sarray gl_sarray::from_const(const flexible_type& value, size_t size) {
   return ret;
 }
 
+gl_sarray gl_sarray::read_json(const std::string& url) {
+  gl_sarray ret;
+  ret.get_proxy()->construct_from_json_record_files(url);
+  return ret;
+}
+
 gl_sarray gl_sarray::from_sequence(size_t start, size_t end, bool reverse) {
   if (end < start) throw std::string("End must be greater than start");
   return unity_sarray::create_sequential_sarray(end - start, 
@@ -190,6 +198,8 @@ gl_sarray::gl_sarray(std::shared_ptr<sarray<flexible_type> > sa)
 {
   m_sarray->construct_from_sarray(sa);
 }
+  
+gl_sarray::~gl_sarray() {}
 
 gl_sarray::operator std::shared_ptr<unity_sarray>() const {
   return get_proxy();
@@ -338,15 +348,26 @@ gl_sarray_range gl_sarray::range_iterator(size_t start, size_t end) const {
 /*                                                                        */
 /**************************************************************************/
 
-void gl_sarray::save(const std::string& directory, const std::string& format) const {
+void gl_sarray::save(const std::string& path, const std::string& _format) const {
+  
+  std::string format = _format;
+
+  if (format == "") {
+    if (boost::algorithm::ends_with(path, ".csv") || boost::algorithm::ends_with(path, ".csv.gz")) {
+      format = "csv";
+    } else {
+      format = "binary";
+    }
+  }
+
   if (format == "binary") {
-    get_proxy()->save_array(directory);
+    get_proxy()->save_array(path);
   } else if (format == "text" || format == "csv") {
     gl_sframe sf;
     sf["X1"] = (*this);
-    sf.save(directory, "csv");
+    sf.save(path, "csv");
   } else {
-    throw std::string("Unknown format");
+    throw std::string("Invalid format. Supported formats are \'csv\', \'text\', and \'binary\'");
   }
 }
 
@@ -359,7 +380,7 @@ bool gl_sarray::empty() const {
 flex_type_enum gl_sarray::dtype() const {
   return get_proxy()->dtype();
 }
-void gl_sarray::materialize() {
+void gl_sarray::materialize() const {
   get_proxy()->materialize();
 }
 bool gl_sarray::is_materialized() const {
@@ -426,11 +447,15 @@ gl_sarray gl_sarray::filter(std::function<bool(const flexible_type&)> fn,
                        }, flex_type_enum::INTEGER, skip_undefined)];
 }
 
+gl_sarray gl_sarray::hash(size_t seed) const {
+  return get_proxy()->hash(seed);
+}
+
 gl_sarray gl_sarray::sample(double fraction) const {
   return get_proxy()->sample(fraction, time(NULL));
 }
-gl_sarray gl_sarray::sample(double fraction, size_t seed) const {
-  return get_proxy()->sample(fraction, seed);
+gl_sarray gl_sarray::sample(double fraction, size_t seed, bool exact) const {
+  return get_proxy()->sample(fraction, seed, exact);
 }
 bool gl_sarray::all() const {
   return get_proxy()->all();
@@ -633,7 +658,7 @@ gl_sarray gl_sarray::sort(bool ascending) const {
 
 gl_sarray gl_sarray::subslice(flexible_type start, 
                               flexible_type stop, 
-                              flexible_type step) {
+                              flexible_type step) const {
   auto dt = dtype();
   if (dt != flex_type_enum::STRING && 
       dt != flex_type_enum::VECTOR &&
@@ -652,10 +677,41 @@ gl_sarray gl_sarray::builtin_rolling_apply(const std::string &fn_name,
 
 
 void gl_sarray::show(const std::string& path_to_client,
-                     const std::string& title,
-                     const std::string& xlabel,
-                     const std::string& ylabel) const {
-  get_proxy()->show(path_to_client, title, xlabel, ylabel);
+                     const flexible_type& title,
+                     const flexible_type& xlabel,
+                     const flexible_type& ylabel) const {
+  using namespace turi;
+  using namespace turi::visualization;
+
+  std::shared_ptr<Plot> plt = this->plot(title, xlabel, ylabel);
+
+  if(plt != nullptr){
+    plt->show(path_to_client);
+  }
+}
+
+std::shared_ptr<visualization::Plot> gl_sarray::plot(const flexible_type& title,
+                                            const flexible_type& xlabel,
+                                            const flexible_type& ylabel) const {
+  using namespace turi;
+  using namespace turi::visualization;
+
+  this->materialize();
+
+  if (this->size() == 0) {
+    log_and_throw("Nothing to show; SArray is empty.");
+  }
+
+  switch (this->dtype()) {
+    case flex_type_enum::INTEGER:
+    case flex_type_enum::FLOAT:
+      return plot_histogram(*this, xlabel, ylabel, title);
+    case flex_type_enum::STRING:
+      return plot_item_frequency(*this, xlabel, ylabel, title);
+    default:
+      log_and_throw(std::string("SArray.plot is currently not available for SArrays of type ") + flex_type_enum_to_name(this->dtype()));
+      return nullptr;
+  }
 }
 
 gl_sarray gl_sarray::cumulative_aggregate(
@@ -831,8 +887,7 @@ void gl_sarray::ensure_has_sarray_reader() const {
   if (!m_sarray_reader) {
     std::lock_guard<mutex> guard(reader_shared_ptr_lock);
     if (!m_sarray_reader) {
-      m_sarray_reader = 
-          std::move(get_proxy()->get_underlying_sarray()->get_reader());
+      m_sarray_reader = get_proxy()->get_underlying_sarray()->get_reader();
     }
   }
 }
@@ -851,7 +906,7 @@ gl_sarray_range::gl_sarray_range(
           (m_sarray_reader, start, end);
   // load the first value if available
   if (m_sarray_reader_buffer->has_next()) {
-    m_current_value = std::move(m_sarray_reader_buffer->next());
+    m_current_value = m_sarray_reader_buffer->next();
   }
 }
 gl_sarray_range::iterator gl_sarray_range::begin() {

@@ -28,7 +28,6 @@ if sys.version_info.major > 2:
     long = int
 
 import os as _os
-_lfs = _os.environ['LFS_ROOT']
 
 
 class NearestNeighborsCreateTest(unittest.TestCase):
@@ -854,7 +853,9 @@ class NearestNeighborsLshAPITest(unittest.TestCase):
         assert q is not None
         assert q.num_rows() >= self.query.num_rows()
         # all the 1-nearest-neighbor should be the queries themselves (and identical points)
-        assert np.all(q['distance'] == 0.)
+        # so that means a distance of zero
+        distances = q['distance']
+        assert(len(distances.filter(lambda x: x != 0.0)) == 0)
 
     def test__list_fields(self):
         """

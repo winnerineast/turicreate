@@ -6,8 +6,9 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
-import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
 
 class GraphColoringModel(_ModelBase):
@@ -97,7 +98,7 @@ def create(graph, verbose=True):
     If given an :class:`~turicreate.SGraph` ``g``, we can create
     a :class:`~turicreate.graph_coloring.GraphColoringModel` as follows:
 
-    >>> g = turicreate.load_graph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
+    >>> g = turicreate.load_sgraph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
     >>> gc = turicreate.graph_coloring.create(g)
 
     We can obtain the ``color id`` corresponding to each vertex in the graph ``g``
@@ -114,8 +115,12 @@ def create(graph, verbose=True):
     --------
     GraphColoringModel
     """
+    from turicreate._cython.cy_server import QuietProgress
+
     if not isinstance(graph, _SGraph):
         raise TypeError('graph input must be a SGraph object.')
 
-    params = _main.run('graph_coloring', {'graph': graph.__proxy__}, verbose)
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.graph_coloring.create(
+            {'graph': graph.__proxy__})
     return GraphColoringModel(params['model'])

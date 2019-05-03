@@ -1,3 +1,8 @@
+/* Copyright © 2017 Apple Inc. All rights reserved.
+ *
+ * Use of this source code is governed by a BSD-3-clause license that can
+ * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
+ */
 #define BOOST_TEST_MODULE
 #include <boost/test/unit_test.hpp>
 #include <util/test_macros.hpp>
@@ -133,7 +138,7 @@ struct unity_sketch_test {
   
   void test_nan_handling_1() {
     std::shared_ptr<unity_sarray_base> dbl(new unity_sarray);
-    std::vector<flexible_type> vecb = {NAN, 1.0/0, 1.0, 2.0, 3.0};
+    std::vector<flexible_type> vecb = {NAN, 1.0/0.0, 1.0, 2.0, 3.0};
     std::vector<flexible_type> vec;
     vec.reserve(4000);
     for(size_t i = 0; i < 1000; ++i) vec.insert(vec.end(), vecb.begin(), vecb.end());
@@ -145,7 +150,7 @@ struct unity_sketch_test {
 
   void test_nan_handling_2() {
     std::shared_ptr<unity_sarray_base> dbl(new unity_sarray);
-    std::vector<flexible_type> vecb = {flex_vec{NAN, 1.0}, flex_vec{6.0, 1.0/0},
+    std::vector<flexible_type> vecb = {flex_vec{NAN, 1.0}, flex_vec{6.0, 1.0/0.0},
                                       flex_vec{1.0}, flex_vec{2.0}, flex_vec{3.0}};
     
     std::vector<flexible_type> vec;

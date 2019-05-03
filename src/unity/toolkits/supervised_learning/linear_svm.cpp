@@ -12,9 +12,13 @@
 #include <ml_data/metadata.hpp>
 
 // Toolkits
-#include <toolkits/supervised_learning/supervised_learning.hpp>
-#include <toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
-#include <toolkits/supervised_learning/linear_svm_opt_interface.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
+#include <unity/toolkits/supervised_learning/linear_svm_opt_interface.hpp>
+
+// CoreML
+#include <unity/toolkits/coreml_export/linear_models_exporter.hpp>
+
 
 // Solvers
 #include <optimization/utils.hpp>
@@ -23,14 +27,13 @@
 
 // Regularizer
 #include <optimization/regularizers-inl.hpp>
-#include <optimization/lbfgs-inl.hpp>
+#include <optimization/lbfgs.hpp>
 #include <optimization/newton_method-inl.hpp>
 #include <optimization/accelerated_gradient-inl.hpp>
 
 // Utilities
-#include <numerics/armadillo.hpp>
+#include <Eigen/SparseCore>
 #include <cmath>
-#include <serialization/serialization_includes.hpp>
 
 
 namespace turi {
@@ -46,14 +49,6 @@ namespace supervised {
  * Destructor. Make sure bad things don't happen
  */
 linear_svm::~linear_svm(){
-}
-
-
-/**
- * Returns the name of the model.
- */
-std::string linear_svm::name(){
-  return "classifier_svm";
 }
 
 /**
@@ -85,7 +80,7 @@ void linear_svm::model_specific_init(const ml_data& data,
   // --------------------------------------------------------------------------
   scaled_logistic_svm_interface.reset(new
       linear_svm_scaled_logistic_opt_interface(data, valid_data, *this));
-  coefs = arma::zeros(variables);
+  coefs = DenseVector::Zero(variables);
 }
 
 
@@ -183,7 +178,7 @@ void linear_svm::train() {
   // Set the initial point and write initial output to screen
   // ---------------------------------------------------------------------------
   DenseVector init_point(variables);
-  init_point.zeros();
+  init_point.setZero();
 
   // Box constriants for L1 loss SVM
   float penalty = options.value("penalty");
@@ -199,7 +194,7 @@ void linear_svm::train() {
   // ---------------------------------------------------------------------------
   optimization::solver_return stats;
   DenseVector is_regularized(variables);
-  is_regularized.ones();
+  is_regularized.setOnes();
   is_regularized(variables - 1) = 0;
 
   // Set the regularization penalty
@@ -211,7 +206,7 @@ void linear_svm::train() {
   std::map<std::string, flexible_type> solver_opts
     = options.current_option_values();
   if (solver == "lbfgs") {
-    stats = turi::optimization::lbfgs(*scaled_logistic_svm_interface, init_point,
+    stats = turi::optimization::lbfgs_compat(scaled_logistic_svm_interface, init_point,
         solver_opts, smooth_reg);
   } else {
     std::ostringstream msg;
@@ -219,6 +214,12 @@ void linear_svm::train() {
     msg << "Supported solvers are (auto, lbfgs)" << std::endl;
     log_and_throw(msg.str());
   }
+
+  // Save final accuracies
+  if(scaled_logistic_svm_interface->num_validation_examples() > 0) {
+    state["validation_accuracy"] = scaled_logistic_svm_interface->get_validation_accuracy();
+  }
+  state["training_accuracy"] = scaled_logistic_svm_interface->get_training_accuracy();
 
   // Store the coefficients in the model
   // ---------------------------------------------------------------------------
@@ -253,7 +254,7 @@ void linear_svm::train() {
 flexible_type linear_svm::predict_single_example(
          const DenseVector& x, 
          const prediction_type_enum& output_type){
-  double margin = dot(x, coefs);
+  double margin = x.dot(coefs);
   switch (output_type) {
     // Margin
     case prediction_type_enum::MARGIN:
@@ -264,6 +265,7 @@ flexible_type linear_svm::predict_single_example(
       return (margin >= 0.0); 
 
     // Class
+    case prediction_type_enum::NA:
     case prediction_type_enum::CLASS: 
     {
       size_t class_id = (margin >= 0.0);
@@ -273,13 +275,14 @@ flexible_type linear_svm::predict_single_example(
     // Not supported types
     case prediction_type_enum::PROBABILITY:
     case prediction_type_enum::MAX_PROBABILITY:
-    case prediction_type_enum::NA:
     case prediction_type_enum::RANK:
     case prediction_type_enum::PROBABILITY_VECTOR:
       log_and_throw("Output type not supported.");
 
   }
-  DASSERT_TRUE(false);
+
+  log_and_throw(std::string("Configuration not supported"));
+  ASSERT_UNREACHABLE();
 }
 
 /**
@@ -288,7 +291,7 @@ flexible_type linear_svm::predict_single_example(
 flexible_type linear_svm::predict_single_example(
          const SparseVector& x, 
          const prediction_type_enum& output_type){
-  double margin = dot(x, coefs);
+  double margin = x.dot(coefs);
   switch (output_type) {
     // Margin
     case prediction_type_enum::MARGIN:
@@ -298,6 +301,7 @@ flexible_type linear_svm::predict_single_example(
       case prediction_type_enum::CLASS_INDEX:
       return (margin >= 0.0);
     // Class
+    case prediction_type_enum::NA:
     case prediction_type_enum::CLASS: 
     {
       size_t class_id = (margin >= 0.0);
@@ -307,12 +311,13 @@ flexible_type linear_svm::predict_single_example(
     // Not supported
     case prediction_type_enum::PROBABILITY:
     case prediction_type_enum::MAX_PROBABILITY:
-    case prediction_type_enum::NA:
     case prediction_type_enum::RANK:
     case prediction_type_enum::PROBABILITY_VECTOR:
       log_and_throw("Output type not supported.");
   }
-  DASSERT_TRUE(false);
+
+  log_and_throw(std::string("Configuration not supported"));
+  ASSERT_UNREACHABLE();
 }
 
 
@@ -334,7 +339,8 @@ gl_sframe linear_svm::fast_classify(
     const std::string& missing_value_action) {
   // Class predictions
   gl_sframe sf_class;
-  sf_class.add_column(fast_predict(rows, "class", missing_value_action), "class");
+  sf_class.add_column(fast_predict(rows, missing_value_action, "class"),
+		      "class");
   return sf_class;
 }
 
@@ -402,6 +408,17 @@ size_t linear_svm::get_version() const{
   //  4 - Version 1.5
   //  5 - Version 1.7
   return SVM_MODEL_VERSION;  
+}
+  
+std::shared_ptr<coreml::MLModelWrapper> linear_svm::export_to_coreml() {
+
+  std::map<std::string, flexible_type> context = { 
+    {"model_type", "linear_svm"}, 
+    {"version", std::to_string(get_version())}, 
+    {"class", name()}, 
+    {"short_description", "Linear SVM Model."}};
+
+  return export_linear_svm_as_model_asset(ml_mdata, coefs, context);
 }
 
 } // supervised

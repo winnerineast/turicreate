@@ -6,6 +6,8 @@
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
+
+import turicreate as _tc
 from turicreate.data_structures.sgraph import SGraph as _SGraph
 import turicreate.toolkits._main as _main
 from turicreate.toolkits.graph_analytics._model_base import GraphAnalyticsModel as _ModelBase
@@ -99,7 +101,7 @@ def create(graph, verbose=True):
     a :class:`~turicreate.connected_components.ConnectedComponentsModel` as
     follows:
 
-    >>> g = turicreate.load_graph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
+    >>> g = turicreate.load_sgraph('http://snap.stanford.edu/data/email-Enron.txt.gz', format='snap')
     >>> cc = turicreate.connected_components.create(g)
     >>> cc.summary()
 
@@ -125,9 +127,12 @@ def create(graph, verbose=True):
     --------
     ConnectedComponentsModel
     """
-    if not isinstance(graph, _SGraph):
-        raise TypeError('graph input must be a SGraph object.')
+    from turicreate._cython.cy_server import QuietProgress
 
-    params = _main.run('connected_components', {'graph': graph.__proxy__},
-                       verbose)
+    if not isinstance(graph, _SGraph):
+        raise TypeError('"graph" input must be a SGraph object.')
+
+    with QuietProgress(verbose):
+        params = _tc.extensions._toolkits.graph.connected_components.create(
+            {'graph': graph.__proxy__})
     return ConnectedComponentsModel(params['model'])

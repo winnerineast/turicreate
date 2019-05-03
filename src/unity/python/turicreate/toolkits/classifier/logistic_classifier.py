@@ -16,7 +16,6 @@ from turicreate.toolkits._internal_utils import _toolkit_repr_print, \
                                         _toolkit_get_topk_bottomk, \
                                         _raise_error_if_not_sframe, \
                                         _check_categorical_option_type, \
-                                        _map_unity_proxy_to_object, \
                                         _raise_error_evaluation_metric_is_valid, \
                                         _summarize_coefficients
 
@@ -162,7 +161,7 @@ def create(dataset, target, features=None,
         the model trained. Setting this to more than ``max_iterations`` has the
         same effect as setting it to ``max_iterations``.
 
-    max_iterations : float, optional
+    max_iterations : int, optional
 
         The maximum number of allowed passes through the data. More passes over
         the data can result in a more accurately trained model. Consider
@@ -382,7 +381,7 @@ class LogisticClassifier(_Classifier):
 
     """
     def __init__(self, model_proxy):
-        '''__init__(self)'''
+
         self.__proxy__ = model_proxy
         self.__name__ = self.__class__._native_name()
 
@@ -480,7 +479,11 @@ class LogisticClassifier(_Classifier):
         short_description = _coreml_utils._mlmodel_short_description(display_name)
         context = {"class": self.__class__.__name__,
                    "version": _turicreate.__version__,
-                   "short_description": short_description}
+                   "short_description": short_description,
+                   'user_defined':{
+                    'turicreate_version': _turicreate.__version__
+                   }
+                }
         _logistic_classifier_export_as_model_asset(self.__proxy__, filename, context)
 
     def _get(self, field):
@@ -618,10 +621,12 @@ class LogisticClassifier(_Classifier):
         >>> class_predictions = model.predict(data, output_type='class')
 
         """
-
+        
         return super(_Classifier, self).predict(dataset,
                                                 output_type=output_type,
                                                 missing_value_action=missing_value_action)
+        
+            
 
     def classify(self, dataset, missing_value_action='auto'):
         """
@@ -749,29 +754,22 @@ class LogisticClassifier(_Classifier):
 
         # Low latency path
         if isinstance(dataset, list):
-            return _turicreate.extensions._fast_predict_topk(self.__proxy__, dataset,
-                    output_type, missing_value_action, k)
+            return self.__proxy__.fast_predict_topk(
+                dataset, missing_value_action, output_type, k)
         if isinstance(dataset, dict):
-            return _turicreate.extensions._fast_predict_topk(self.__proxy__, [dataset],
-                    output_type, missing_value_action, k)
+            return self.__proxy__.fast_predict_topk(
+                [dataset], missing_value_action, output_type, k)
         # Fast path
         _raise_error_if_not_sframe(dataset, "dataset")
         options = dict()
         if (missing_value_action == 'auto'):
             missing_value_action = _sl.select_default_missing_value_policy(
                                                               self, 'predict')
-        options.update({'model': self.__proxy__,
-                        'model_name': self.__name__,
-                        'dataset': dataset,
-                        'output_type': output_type,
-                        'topk': k,
-                        'missing_value_action': missing_value_action})
-        target = _turicreate.toolkits._main.run(
-                  'supervised_learning_predict_topk', options)
-        return _map_unity_proxy_to_object(target['predicted'])
+        return self.__proxy__.predict_topk(
+            dataset, missing_value_action, output_type, k)
 
     
-    def evaluate(self, dataset, metric='auto', missing_value_action='auto'):
+    def evaluate(self, dataset, metric='auto', missing_value_action='auto', with_predictions=False):
         """
         Evaluate the model by making predictions of target values and comparing
         these to actual values.
@@ -840,4 +838,5 @@ class LogisticClassifier(_Classifier):
                  'log_loss', 'precision', 'recall', 'f1_score'])
         return super(_Classifier, self).evaluate(dataset,
                                  missing_value_action=missing_value_action,
-                                 metric=metric)
+                                 metric=metric,
+                                 with_predictions=with_predictions)

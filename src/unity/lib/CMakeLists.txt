@@ -1,10 +1,17 @@
 project(unity)
 
-subdirs(visualization)
+subdirs(
+    annotation
+    visualization
+)
 
-make_library(unity_core
+make_library(unity_core OBJECT
   SOURCES
     api/function_closure_info.cpp
+    extensions/model_base.cpp
+    extensions/ml_model.cpp
+    extensions/option_manager.cpp
+    extensions/option_info.cpp
     variant_converter.cpp
     variant.cpp
     unity_global.cpp
@@ -21,7 +28,6 @@ make_library(unity_core
     unity_sgraph.cpp
     unity_sketch.cpp
     gl_datatype_registration.cpp
-    toolkit_class_base.cpp
     gl_sgraph.cpp
     gl_gframe.cpp
     gl_sarray.cpp
@@ -30,24 +36,20 @@ make_library(unity_core
     ../extensions/additional_sframe_utilities.cpp
     unity_sarray_builder.cpp
     unity_sframe_builder.cpp
-    ${VISUALIZATION_SOURCES}
+    visualization/columnwise_summary.cpp
   REQUIRES
     flexible_type
-    pylambda 
+    pylambda
     table_printer
-    sframe cancel_serverside_ops 
-    sframe_query_engine 
-    libjson sgraph 
-    curl 
+    sframe cancel_serverside_ops
+    sframe_query_engine
+    libjson sgraph
+    curl
     image_type image_io
     startup_teardown
     pylambda_worker
-    numerics
+    eigen
     visualization
+    annotation
     EXTERNAL_VISIBILITY
 )
-
-make_shared_library_from_static(unity_core_shared
-                                REQUIRES
-                                unity_core)
-

@@ -14,6 +14,7 @@ namespace visualization {
 
 class transformation_output {
   public:
+    virtual ~transformation_output() = default;
     virtual std::string vega_column_data(bool sframe = false) const = 0;
 };
 
@@ -22,47 +23,28 @@ class sframe_transformation_output : public transformation_output {
     virtual std::string vega_summary_data() const = 0;
 };
 
-class fused_transformation_output : public transformation_output {
-  private:
-    std::vector<std::shared_ptr<transformation_output>> m_outputs;
-
-  public:
-    fused_transformation_output(const std::vector<std::shared_ptr<transformation_output>> outputs);
-    virtual std::string vega_column_data(bool sframe = false) const override;
-};
-
 class transformation_base {
   public:
+    virtual ~transformation_base() = default;
     virtual std::shared_ptr<transformation_output> get() = 0;
     virtual bool eof() const = 0;
-    virtual flex_int get_rows_processed() const = 0;
+    double get_percent_complete() const;
     virtual size_t get_batch_size() const = 0;
-};
-
-class fused_transformation : public transformation_base {
-  private:
-    std::vector<std::shared_ptr<transformation_base>> m_transformers;
-
-  public:
-    fused_transformation(const std::vector<std::shared_ptr<transformation_base>> transformers);
-    virtual std::shared_ptr<transformation_output> get() override;
-    virtual bool eof() const override;
-    virtual flex_int get_rows_processed() const override;
-    virtual size_t get_batch_size() const override;
+    virtual flex_int get_total_rows() const = 0;
+    virtual flex_int get_rows_processed() const = 0;
 };
 
 class transformation_collection : public std::vector<std::shared_ptr<transformation_base>> {
   public:
     // combines all of the transformations in the collection
     // into a single transformer interface to simplify consumption
-    std::shared_ptr<fused_transformation> fuse();
 };
 
 template<typename InputIterable,
-         typename Output,
-         size_t BATCH_SIZE>
+         typename Output>
 class transformation : public transformation_base {
   protected:
+    size_t m_batch_size;
     InputIterable m_source;
     std::shared_ptr<Output> m_transformer;
     size_t m_currentIdx = 0;
@@ -92,8 +74,9 @@ class transformation : public transformation_base {
     virtual void merge_results(std::vector<Output>& transformers) = 0;
 
   public:
-    virtual void init(const InputIterable& source) {
+    virtual void init(const InputIterable& source, size_t batch_size) {
       check_init("Transformer is already initialized.", false);
+      m_batch_size = batch_size;
       m_source = source;
       m_transformer = std::make_shared<Output>();
       m_currentIdx = 0;
@@ -109,7 +92,10 @@ class transformation : public transformation_base {
       DASSERT_LE(m_currentIdx, m_source.size());
       return m_currentIdx;
     }
-
+    virtual flex_int get_total_rows() const override {
+      require_init();
+      return m_source.size();
+    }
     virtual std::shared_ptr<transformation_output> get() override {
       require_init();
       if (this->eof()) {
@@ -119,7 +105,7 @@ class transformation : public transformation_base {
 
       const size_t num_threads_reported = thread_pool::get_instance().size();
       const size_t start = m_currentIdx;
-      const size_t input_size = std::min(BATCH_SIZE, m_source.size() - m_currentIdx);
+      const size_t input_size = std::min(m_batch_size, m_source.size() - m_currentIdx);
       const size_t end = start + input_size;
       auto transformers = this->split_input(num_threads_reported);
       const auto& source = this->m_source;
@@ -153,7 +139,7 @@ class transformation : public transformation_base {
     }
 
     virtual size_t get_batch_size() const override {
-      return BATCH_SIZE;
+      return m_batch_size;
     }
 };
 

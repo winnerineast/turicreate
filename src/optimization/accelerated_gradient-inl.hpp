@@ -8,7 +8,7 @@
 
 // Types
 #include <flexible_type/flexible_type.hpp>
-#include <numerics/armadillo.hpp>
+#include <Eigen/Core>
 
 // Optimization
 #include <optimization/utils.hpp>
@@ -16,11 +16,7 @@
 #include <optimization/regularizer_interface.hpp>
 #include <optimization/line_search-inl.hpp>
 #include <table_printer/table_printer.hpp>
-#include <numerics/armadillo.hpp>
 
-#ifdef HAS_DISTRIBUTED
-#include <distributed/utils.hpp>
-#endif
 
 // TODO: List of todo's for this file
 //------------------------------------------------------------------------------
@@ -77,6 +73,10 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
     std::stringstream ss;
     ss.str("");
 
+    // First iteration will take longer. Warn the user.
+    logprogress_stream <<"Tuning step size. First iteration could take longer"
+                       <<" than subsequent iterations." << std::endl;
+
     // Print progress 
     table_printer printer(
         model.get_status_header({"Iteration", "Passes", "Step size", "Elapsed Time"}));
@@ -97,7 +97,7 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
     DenseVector y = point;                            // Momentum
     DenseVector xp = point;                           // Point in the previos iter
     DenseVector x = point;                            // Point in the current 
-    delta_point.zeros();
+    delta_point.setZero();
 
     // First compute the residual. Sometimes, you already have the solution
     // during the starting point. In these settings, you don't want to waste
@@ -108,10 +108,12 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
     double residual = compute_residual(gradient);
     stats.num_passes++;
     
-    // First iteration will take longer. Warn the user.
-    logprogress_stream <<"Tuning step size. First iteration could take longer"
-                       <<" than subsequent iterations." << std::endl;
-    
+    std::vector<std::string> stat_info = {std::to_string(iters),
+                                          std::to_string(stats.num_passes),
+                                          std::to_string(step_size),
+                                          std::to_string(tmr.current_time())};
+    std::vector<std::string> row = model.get_status(point, stat_info);
+    printer.print_progress_row_strs(iters, row);
 
     // Value of parameters t in itersation k-1 and k
     double t = 1;                           // t_k   
@@ -149,8 +151,8 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
         // Compute 
         // f(y) + 0.5 * s * |delta_point|^2 + delta_point^T \grad_f(y)
         delta_point = (point - y);
-        Qply = fy  + dot(delta_point, gradient) + 0.5
-          * squared_norm(delta_point) / step_size;
+        Qply = fy  + delta_point.dot(gradient) + 0.5
+          * delta_point.squaredNorm() / step_size;
         
         if (fply < Qply){
           break;
@@ -172,12 +174,12 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
       tp = t;
 
       // Numerical error: Insufficient progress.
-      if (squared_norm(delta_point) <= OPTIMIZATION_ZERO){
+      if (delta_point.norm() <= OPTIMIZATION_ZERO){
         stats.status = OPTIMIZATION_STATUS::OPT_NUMERIC_ERROR;
         break;
       }
       // Numerical error: Numerical overflow. (Step size was too large)
-      if (!delta_point.is_finite()) {
+      if (!delta_point.array().isFinite().all()) {
         stats.status = OPTIMIZATION_STATUS::OPT_NUMERIC_OVERFLOW;
         break;
       }
@@ -191,17 +193,17 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
       iters++;
       
       // Check for nan's in the function value.
-      if(!std::isfinite(fy)) {
+      if(std::isinf(fy) || std::isnan(fy)) {
         stats.status = OPTIMIZATION_STATUS::OPT_NUMERIC_ERROR;
         break;
       }
 
       // Print progress
-      auto stat_info = {std::to_string(iters), 
-                        std::to_string(stats.num_passes),
-                        std::to_string(step_size), 
-                        std::to_string(tmr.current_time())};
-      auto row = model.get_status(point, stat_info);
+      stat_info = {std::to_string(iters),
+                   std::to_string(stats.num_passes),
+                   std::to_string(step_size),
+                   std::to_string(tmr.current_time())};
+      row = model.get_status(point, stat_info);
       printer.print_progress_row_strs(iters, row);
       
       // Log info for debugging. 
@@ -210,11 +212,6 @@ inline solver_return accelerated_gradient(first_order_opt_interface& model,
                           << "Residual (" << residual << ") " 
                           << "Loss (" << fy << ") " 
                           << std::endl;
-
-#ifdef HAS_DISTRIBUTED
-      bool gradient_all_equals = distributed_check_equals(arma::norm(gradient, 2));
-      ASSERT_MSG(gradient_all_equals, "detect inconsistent gradients");
-#endif
     }
     printer.print_footer();
     

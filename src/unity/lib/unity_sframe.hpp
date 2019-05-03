@@ -13,6 +13,7 @@
 #include <unity/lib/unity_sarray.hpp>
 #include <sframe/group_aggregate_value.hpp>
 #include <sframe/sframe_rows.hpp>
+#include <unity/lib/visualization/plot.hpp>
 
 namespace turi {
 
@@ -23,7 +24,7 @@ class sframe_reader;
 class sframe_iterator;
 
 namespace query_eval {
-class planner_node;
+struct planner_node;
 } // query_eval
 
 
@@ -387,14 +388,14 @@ class unity_sframe : public unity_sframe_base {
    *
    * Returns a list of size 2 of the unity_sframes resulting from the split.
    */
-  std::list<std::shared_ptr<unity_sframe_base>> random_split(float percent, int random_seed);
+  std::list<std::shared_ptr<unity_sframe_base>> random_split(float percent, int random_seed, bool exact=false);
 
   /**
    * Sample the rows of sframe uniformly with ratio = percent, and seed = random_seed.
    *
    * Returns unity_sframe* containing the sampled rows.
    */
-  std::shared_ptr<unity_sframe_base> sample(float percent, int random_seed);
+  std::shared_ptr<unity_sframe_base> sample(float percent, int random_seed, bool exact=false);
 
   /**
    * materialize the sframe, this is different from save() as this is a temporary persist of
@@ -553,15 +554,18 @@ class unity_sframe : public unity_sframe_base {
 
   void explore(const std::string& path_to_client, const std::string& title);
   void show(const std::string& path_to_client);
+  std::shared_ptr<model_base> plot();
 
  private:
   /**
    * Pointer to the lazy evaluator logical operator node.
-   * Should never be NULL.
+   * Should never be NULL.  Must be set with the set_planner_node() function above.
    */
   std::shared_ptr<query_eval::planner_node> m_planner_node;
 
   std::vector<std::string> m_column_names;
+
+  std::shared_ptr<sframe> m_cached_sframe;
 
   /**
    * Supports \ref begin_iterator() and \ref iterator_get_next().

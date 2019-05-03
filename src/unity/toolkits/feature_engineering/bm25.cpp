@@ -8,7 +8,6 @@
 #include <unity/lib/toolkit_class_macros.hpp>
 #include <unity/lib/variant_deep_serialize.hpp>
 
-
 #include <unity/toolkits/feature_engineering/transform_utils.hpp>
 #include <unity/toolkits/feature_engineering/bm25.hpp>
 #include <unity/toolkits/feature_engineering/topk_indexer.hpp>
@@ -122,7 +121,7 @@ flexible_type calc_avg_document_lengths(const gl_sarray& src){
       DASSERT_TRUE(false);
       break;
   }
-  flexible_type avg_document_size = (doc_lengths).sum() / num_documents;
+  flexible_type avg_document_size = doc_lengths.sum() / num_documents;
   return avg_document_size;
 }
 
@@ -183,7 +182,6 @@ double bm25_apply(const flexible_type& input,
             const double b,
             const size_t min_t,
             const size_t max_t) {
-  size_t index = 0;
   size_t document_frequency;
   double bm25_score = 0.0;
   flexible_type processed_input;
@@ -243,7 +241,6 @@ double bm25_apply(const flexible_type& input,
         const std::pair<flexible_type, flexible_type>& kvp = dv[k];
         term_frequency = 0;
         if(std::find(query.begin(), query.end(), kvp.first) != query.end()){
-          index = indexer->lookup(kvp.first);
           document_frequency = indexer->lookup_counts(kvp.first);
           if ((document_frequency >= min_t) && (document_frequency <= max_t)){
             if (kvp.second.get_type() == flex_type_enum::INTEGER) {

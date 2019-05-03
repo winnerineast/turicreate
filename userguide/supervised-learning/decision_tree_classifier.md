@@ -8,12 +8,12 @@ on decision trees.
 
 ##### Introductory Example
 
-In this example, we will use the [Mushrooms dataset](https://archive.ics.uci.edu/ml/datasets/mushroom).
+In this example, we will use the [Mushrooms dataset](https://archive.ics.uci.edu/ml/datasets/mushroom).[<sup>1</sup>](../datasets.md)
 ```python
 import turicreate as tc
 
 # Load the data
-data =  tc.SFrame.read_csv('mushroom.csv')
+data =  tc.SFrame.read_csv('https://raw.githubusercontent.com/apple/turicreate/master/src/unity/python/turicreate/test/mushroom.csv')
 
 # Label 'c' is edible
 data['label'] = data['label'] == 'c'
@@ -36,9 +36,9 @@ results = model.evaluate(test_data)
 
 Refer to the earlier chapters for the following features:
 
-* [Using categorical features](linear-regression.md#linregr-categorical-features)
-* [Sparse features](linear-regression.md#linregr-sparse-features)
-* [List features](linear-regression.md#linregr-list-features)
-* [Evaluating Results](logistic-regression.md#logregr-evaluation)
-* [Multiclass Classification](logistic-regression.md#logregr-multiclass)
-* [Working with imbalanced data](logistic-regression.md#logregr-imbalaced-data)
+* [Using categorical features](linear-regression.md#categorical-features)
+* [Sparse features](linear-regression.md#sparse-features)
+* [List features](linear-regression.md#list-features)
+* [Evaluating Results](logistic-regression.md#evaluating-results)
+* [Multiclass Classification](logistic-regression.md#multiclass-classification)
+* [Working with imbalanced data](logistic-regression.md#working-with-imbalaced-data)

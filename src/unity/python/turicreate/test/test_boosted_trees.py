@@ -21,8 +21,8 @@ from array import array
 
 import os as _os
 
-_lfs = _os.environ['LFS_ROOT']
-mushroom_dataset = _os.path.join(_lfs, 'datasets', 'xgboost','mushroom.csv')
+dirname = _os.path.dirname(__file__)
+mushroom_dataset = _os.path.join(dirname, 'mushroom.csv')
 
 
 _DEFAULT_OPTIONS_REGRESSION = {
@@ -92,6 +92,7 @@ class BoostedTreesRegressionTest(unittest.TestCase):
                 'training_max_error': lambda x: x > 0,
                 'training_time': lambda x: x >= 0,
                 'trees_json': lambda x: isinstance(x, list),
+                'validation_data': lambda x: isinstance(x, tc.SFrame) and len(x) == len(self.dtest),
                 'validation_rmse': lambda x: x > 0,
                 'validation_max_error': lambda x: x > 0,
                 'random_seed': lambda x: x is None,
@@ -306,8 +307,10 @@ def test_suite_boosted_trees_classifier():
     testCases = [
                  binary_classification_integer_target,
                  binary_classification_string_target,
+                 binary_classification_string_target_misc_input,
                  multiclass_classification_integer_target,
                  multiclass_classification_string_target,
+                 multiclass_classification_string_target_misc_input,
                  ]
 
     for t in testCases:
@@ -391,6 +394,21 @@ def binary_classification_integer_target(cls):
             'model_checkpoint_interval': lambda x: x == 5,
             'model_checkpoint_path': lambda x: x is None,
             'resume_from_checkpoint': lambda x: x is None,
+            'training_auc': lambda x: x > 0,
+            'training_confusion_matrix': lambda x: len(x) > 0,
+            'training_f1_score': lambda x: x > 0,
+            'training_precision': lambda x: x > 0,
+            'training_recall': lambda x: x > 0,
+            'training_report_by_class': lambda x: len(x) > 0,
+            'training_roc_curve': lambda x: len(x) > 0,
+            'validation_data': lambda x: isinstance(x, tc.SFrame) and len(x) == len(cls.dtest),
+            'validation_auc': lambda x: x > 0,
+            'validation_confusion_matrix': lambda x: len(x) > 0,
+            'validation_f1_score': lambda x: x > 0,
+            'validation_precision': lambda x: x > 0,
+            'validation_recall': lambda x: x > 0,
+            'validation_report_by_class': lambda x: len(x) > 0,
+            'validation_roc_curve': lambda x: len(x) > 0,
             }
     cls.fields_ans = cls.get_ans.keys()
 
@@ -412,6 +430,15 @@ def binary_classification_string_target(cls):
     cls.get_ans['num_examples_per_class'] = lambda x: x == num_examples_per_class
     cls.get_ans['class_weights'] = lambda x: x == {'0-cat':1.0, '1-cat':1.0}
     cls.get_ans['classes'] = lambda x: x == ['0-cat', '1-cat']
+
+def binary_classification_string_target_misc_input(cls):
+    binary_classification_string_target(cls)
+
+    # Add noise columns of categorical,
+    noise_X = tc.util.generate_random_sframe(cls.data.num_rows(), 'vmdA')
+
+    for c in noise_X.column_names():
+        cls.data[c] = noise_X[c]
 
 
 def multiclass_classification_integer_target(cls):
@@ -452,6 +479,15 @@ def multiclass_classification_string_target(cls):
     cls.get_ans['num_examples_per_class'] = lambda x: x == num_examples_per_class
     cls.get_ans['classes'] = lambda x: set(x) == set(map(str, [0,1,2]))
     cls.get_ans['class_weights'] = lambda x: x == {'0':1.0, '1':1.0, '2':1.0}
+
+def multiclass_classification_string_target_misc_input(cls):
+    multiclass_classification_string_target(cls)
+
+    # Add noise columns of categorical,
+    noise_X = tc.util.generate_random_sframe(cls.data.num_rows(), 'vmdA')
+
+    for c in noise_X.column_names():
+        cls.data[c] = noise_X[c]
 
 
 class BoostedTreesClassifierTest(unittest.TestCase):
@@ -753,3 +789,4 @@ class TestStringTarget(unittest.TestCase):
         # Assert
         self.assertEqual(['cat-0', 'cat-1'],
             sorted(list(evaluation['confusion_matrix']['target_label'].unique())))
+

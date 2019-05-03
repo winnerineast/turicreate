@@ -11,8 +11,8 @@
 #include <ml_data/ml_data.hpp>
 #include <optimization/optimization_interface.hpp>
 #include <optimization/utils.hpp>
-#include <toolkits/supervised_learning/linear_regression.hpp>
-#include <toolkits/supervised_learning/linear_regression_opt_interface.hpp>
+#include <unity/toolkits/supervised_learning/linear_regression.hpp>
+#include <unity/toolkits/supervised_learning/linear_regression_opt_interface.hpp>
 #include <sframe/testing_utils.hpp>
 
 using namespace turi;
@@ -30,7 +30,7 @@ void run_linear_regression_test(std::map<std::string, flexible_type> opts) {
   // Answers
   // -----------------------------------------------------------------------
   DenseVector coefs(features+1);
-  coefs.randn();
+  coefs.setRandom();
 
   // Feature names
   std::vector<std::string> feature_names;
@@ -45,14 +45,14 @@ void run_linear_regression_test(std::map<std::string, flexible_type> opts) {
   std::vector<std::vector<flexible_type>> X_data;
   for(size_t i=0; i < examples; i++){
     DenseVector x(features);
-    x.randn();
+    x.setRandom();
     std::vector<flexible_type> x_tmp;
     for(size_t k=0; k < features; k++){
       x_tmp.push_back(x(k));
     }
 
     // Compute the prediction for this
-    double t = dot(x, coefs.subvec(0, features-1)) + coefs(features);
+    double t = x.dot(coefs.segment(0, features)) + coefs(features);
     std::vector<flexible_type> y_tmp;
     y_tmp.push_back(t);
 
@@ -104,9 +104,8 @@ void run_linear_regression_test(std::map<std::string, flexible_type> opts) {
   std::shared_ptr<sarray<flexible_type>> _pred_margin = model->predict(data);
 
   // Save predictions made by the model
-  size_t rows;
   auto reader = _pred_margin->get_reader();
-  rows = reader->read_rows(0, examples, pred_margin);
+  reader->read_rows(0, examples, pred_margin);
 
   // Check that the predictions made by the model are right!
   for(size_t i=0; i < examples; i++){
@@ -115,7 +114,7 @@ void run_linear_regression_test(std::map<std::string, flexible_type> opts) {
       x(k) = X_data[i][k];
     }
     x(features) = 1;
-    double t = arma::dot(x, _coefs);
+    double t = x.dot(_coefs);
     double p = pred_margin[i];
     TS_ASSERT(abs(p - t) < 1e-5);
   }
@@ -135,13 +134,19 @@ void run_linear_regression_test(std::map<std::string, flexible_type> opts) {
   turi::iarchive iarc(archive_read);
   iarc >> *model;
 
+  // Check RMSE has been saved
+  // ----------------------------------------------------------------------
+  variant_type variant_rmse = model->get_value_from_state("training_rmse");
+  double rmse = variant_get_value<flexible_type>(variant_rmse).to<double>();
+  TS_ASSERT(rmse >= 0);
+  TS_ASSERT(rmse <= 1);
 
   // Check coefficients after saving and loading.
   // ----------------------------------------------------------------------
   DenseVector _coefs_after_load(features+1);
   model->get_coefficients(_coefs_after_load);
   TS_ASSERT(_coefs_after_load.size() == features + 1);
-  TS_ASSERT(arma::approx_equal(_coefs_after_load, _coefs,"absdiff", 1e-5));
+  TS_ASSERT(_coefs_after_load.isApprox(_coefs, 1e-5));
   _options = model->get_current_options();
   for (auto& kvp: options){
     TS_ASSERT(_options[kvp.first] == kvp.second);
@@ -160,7 +165,7 @@ void run_linear_regression_test(std::map<std::string, flexible_type> opts) {
       x(k) = X_data[i][k];
     }
     x(features) = 1;
-    double t = arma::dot(x, _coefs);
+    double t = x.dot(_coefs);
     double p = pred_margin[i];
     TS_ASSERT(abs(p - t) < 1e-5);
   }
@@ -207,7 +212,7 @@ void run_linear_regression_opt_interface_test(std::map<std::string,
   // Answers
   // -----------------------------------------------------------------------
   DenseVector coefs(features+1);
-  coefs.randn();
+  coefs.setRandom();
 
   // Feature names
   std::vector<std::string> feature_names;
@@ -222,14 +227,14 @@ void run_linear_regression_opt_interface_test(std::map<std::string,
   std::vector<std::vector<flexible_type>> X_data;
   for(size_t i=0; i < examples; i++){
     DenseVector x(features);
-    x.randn();
+    x.setRandom();
     std::vector<flexible_type> x_tmp;
     for(size_t k=0; k < features; k++){
       x_tmp.push_back(x(k));
     }
 
     // Compute the prediction for this
-    double t = dot(x, coefs.subvec(0, features-1)) + coefs(features);
+    double t = x.dot(coefs.segment(0, features)) + coefs(features);
     std::vector<flexible_type> y_tmp;
     y_tmp.push_back(t);
 
@@ -277,7 +282,7 @@ void run_linear_regression_opt_interface_test(std::map<std::string,
   for(size_t i=0; i < 10; i++){
 
     DenseVector point(variables);
-    point.randn();
+    point.setRandom();
 
     // Check gradients, functions and hessians.
     DenseVector gradient(variables);
@@ -301,12 +306,12 @@ void run_linear_regression_opt_interface_test(std::map<std::string,
     lr_interface->compute_first_order_statistics(point, _gradient,
       _func_value);
     TS_ASSERT(abs(func_value - _func_value) < 1e-5);
-    TS_ASSERT(arma::approx_equal(gradient, _gradient,"absdiff", 1e-10));
+    TS_ASSERT(gradient.isApprox(_gradient));
     lr_interface->compute_second_order_statistics(point, _hessian, _gradient,
       _func_value);
     TS_ASSERT(abs(func_value - _func_value) < 1e-5);
-    TS_ASSERT(arma::approx_equal(gradient, _gradient,"absdiff", 1e-10));
-    TS_ASSERT(arma::approx_equal(hessian, _hessian,"absdiff", 1e-10));
+    TS_ASSERT(gradient.isApprox(_gradient));
+    TS_ASSERT(hessian.isApprox(_hessian));
 
   }
 
@@ -319,7 +324,6 @@ void run_linear_regression_opt_interface_test(std::map<std::string,
  *  Check linear regression opt interface
 */
 struct linear_regression_opt_interface_test  {
-
   public:
 
   void test_linear_regression_opt_interface_basic_2d() {

@@ -373,8 +373,8 @@ groupby_descriptor_type ARGMIN(const std::string& agg, const std::string& out);
  * \ingroup group_glsdk
  * A tabular, column-mutable dataframe object that can scale to big data. 
  *
- * The data in \ref gl_sframe is stored column-wise on the Turi Server
- * side, and is stored on persistent storage (e.g. disk) to avoid being
+ * The data in \ref gl_sframe is stored column-wise on persistent
+ * storage (e.g. disk) to avoid being
  * constrained by memory size.  Each column in an \ref gl_sframe is a
  * immutable \ref gl_sarray, but \ref gl_sframe objects
  * are mutable in that columns can be added and subtracted with ease.  
@@ -523,6 +523,11 @@ class gl_sframe {
    * Show a visualization of the SFrame.
    */
   void show(const std::string& path_to_client) const;
+
+  /**
+   * Return a plot object of the SFrame (same visualization as `show`)
+   */
+  std::shared_ptr<model_base> plot() const;
 
   /**
    * Constructs a gl_sframe from an in-memory map of values
@@ -1044,7 +1049,7 @@ class gl_sframe {
    *  ? rows x 2 columns]
    * \endcode
    */
-  gl_sframe sample(double fraction, size_t seed) const;
+  gl_sframe sample(double fraction, size_t seed, bool exact=false) const;
 
 
   /**
@@ -1100,7 +1105,7 @@ class gl_sframe {
    * 44 980
    * \endcode
    */
-  std::pair<gl_sframe, gl_sframe> random_split(double fraction, size_t seed) const;
+  std::pair<gl_sframe, gl_sframe> random_split(double fraction, size_t seed, bool exact=false) const;
 
   /**
    * Get top k rows according to the given column. Result is according to and
@@ -2811,15 +2816,14 @@ class gl_sframe {
 
   virtual std::shared_ptr<unity_sframe> get_proxy() const;
 
+
  private:
   void instantiate_new();
-  void ensure_has_sframe_reader() const;
 
   std::shared_ptr<unity_sframe> m_sframe;
-  mutable std::shared_ptr<sframe_reader> m_sframe_reader;
 
+  std::shared_ptr<sframe_reader> get_sframe_reader() const;
 };
-
 
 /**
  * Provides printing of the gl_sframe.
@@ -2904,8 +2908,8 @@ class gl_sframe_range {
 class gl_sarray_reference: public gl_sarray {
  public:
   gl_sarray_reference() = delete;
-  gl_sarray_reference(gl_sarray_reference&&) = default;
-  gl_sarray_reference& operator=(gl_sarray_reference&&) = default;
+  gl_sarray_reference(gl_sarray_reference&&);
+  gl_sarray_reference& operator=(gl_sarray_reference&&);
   gl_sarray_reference& operator=(const gl_sarray_reference&);
   gl_sarray_reference& operator=(const gl_sarray&);
   gl_sarray_reference& operator=(const flexible_type& value);
@@ -2932,7 +2936,7 @@ class gl_sarray_reference: public gl_sarray {
 class const_gl_sarray_reference: public gl_sarray {
  public:
   const_gl_sarray_reference() = delete;
-  const_gl_sarray_reference(const_gl_sarray_reference&&) = default;
+  const_gl_sarray_reference(const_gl_sarray_reference&&);
   virtual std::shared_ptr<unity_sarray> get_proxy() const;
  private:
   const_gl_sarray_reference(const const_gl_sarray_reference&) = default;

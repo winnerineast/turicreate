@@ -118,7 +118,6 @@ void column_statistics::_finalize_threadlocal(
         for(size_t src_idx = 0; src_idx < by_thread_mean_var_acc.size(); ++src_idx) {
 
           const auto& mean_std_v = by_thread_mean_var_acc[src_idx];
-          const auto& local_counts = by_thread_element_counts[src_idx];
 
           for(size_t i = start_idx; i < std::min(mean_std_v.size(), end_idx); ++i) {
 
@@ -151,6 +150,7 @@ void column_statistics::_finalize_threadlocal(
 
         case ml_column_mode::NUMERIC:
         case ml_column_mode::NUMERIC_VECTOR:
+        case ml_column_mode::NUMERIC_ND_VECTOR:
           {
             DASSERT_FALSE(using_counts);
             DASSERT_TRUE(using_mean_std);
@@ -263,6 +263,7 @@ std::pair<bool, bool> column_statistics::_get_using_flags() const {
       break;
     case ml_column_mode::NUMERIC:
     case ml_column_mode::NUMERIC_VECTOR:
+    case ml_column_mode::NUMERIC_ND_VECTOR:
       using_mean_std = true;
       using_counts = false;
       break;

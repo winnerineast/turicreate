@@ -4,6 +4,7 @@
  * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
  */
 #include <unity/toolkits/graph_analytics/label_propagation.hpp>
+#include <unity/lib/toolkit_function_macros.hpp>
 #include <unity/lib/toolkit_util.hpp>
 #include <unity/lib/simple_model.hpp>
 #include <unity/lib/unity_sgraph.hpp>
@@ -11,8 +12,7 @@
 #include <sframe/algorithm.hpp>
 #include <table_printer/table_printer.hpp>
 #include <unity/lib/gl_sarray.hpp>
-#include <numerics/armadillo.hpp>
-#include <numerics/row_major_matrix.hpp>
+#include <Eigen/Core>
 #include <export.hpp>
 
 namespace turi {
@@ -32,20 +32,38 @@ namespace label_propagation {
   int max_iterations = -1;
   const int MAX_CLASSES = 1000;
 
+  const variant_map_type& get_default_options() {
+    static const variant_map_type DEFAULT_OPTIONS {
+      {"threshold", 1E-3},
+      {"weight_field", ""},
+      {"self_weight", 1.0},
+      {"undirected", false},
+      {"max_iterations", -1},
+    };
+    return DEFAULT_OPTIONS;
+  }
+
   /**************************************************************************/
   /*                                                                        */
   /*                   Setup and Teardown functions                         */
   /*                                                                        */
   /**************************************************************************/
-  void setup(toolkit_function_invocation& invoke) {
-    label_field = safe_varmap_get<flexible_type>(invoke.params, "label_field").get<std::string>();
-    weight_field = safe_varmap_get<flexible_type>(invoke.params, "weight_field").get<std::string>();
-    threshold = safe_varmap_get<flexible_type>(invoke.params, "threshold");
-    self_weight = safe_varmap_get<flexible_type>(invoke.params, "self_weight");
-    undirected = safe_varmap_get<flexible_type>(invoke.params, "undirected");
-    max_iterations = safe_varmap_get<flexible_type>(invoke.params, "max_iterations");
-    if (invoke.params.count("single_precision")) {
-      single_precision = safe_varmap_get<flexible_type>(invoke.params, "single_precision");
+  void setup(variant_map_type& params) {
+    for (const auto& opt : get_default_options()) {
+      params.insert(opt);  // Doesn't overwrite keys already in params
+    }
+
+    label_field = safe_varmap_get<flexible_type>(
+        params, "label_field").get<std::string>();
+    weight_field = safe_varmap_get<flexible_type>(
+        params, "weight_field").get<std::string>();
+    threshold = safe_varmap_get<flexible_type>(params, "threshold");
+    self_weight = safe_varmap_get<flexible_type>(params, "self_weight");
+    undirected = safe_varmap_get<flexible_type>(params, "undirected");
+    max_iterations = safe_varmap_get<flexible_type>(params, "max_iterations");
+    if (params.count("single_precision")) {
+      single_precision =
+	  safe_varmap_get<flexible_type>(params, "single_precision");
       if (single_precision) {
         logprogress_stream << "Running label propagation using single precision" << std::endl;
       }
@@ -59,7 +77,6 @@ namespace label_propagation {
   void run(sgraph& g, size_t& num_iter, double& average_l2_delta) {
 
     /// Type defs
-    typedef std::vector<std::vector<int>> int_column_type;
     typedef std::vector<std::vector<flexible_type>> flex_column_type;
 
     /**
@@ -130,7 +147,7 @@ namespace label_propagation {
      *
      * prev_label_pb is a store the copy of the previous iteration. 
      */
-    typedef row_major_matrix<FLOAT_TYPE> matrix_type;
+    typedef Eigen::Matrix<FLOAT_TYPE, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> matrix_type;
     std::unique_ptr<std::vector<matrix_type>> current_label_pb(
         new std::vector<matrix_type>(num_partitions));
     std::unique_ptr<std::vector<matrix_type>> prev_label_pb(
@@ -139,10 +156,8 @@ namespace label_propagation {
 
     // Initialize class probability to zero
     for (size_t i = 0; i < num_partitions; ++i) {
-      (*current_label_pb)[i] = matrix_type(size_of_partition[i], num_classes);
-      (*current_label_pb)[i].zeros();
-      (*prev_label_pb)[i] = matrix_type(size_of_partition[i], num_classes);
-      (*prev_label_pb)[i].zeros();
+      (*current_label_pb)[i] = matrix_type::Zero(size_of_partition[i], num_classes);
+      (*prev_label_pb)[i] = matrix_type::Zero(size_of_partition[i], num_classes);
       vertex_locks[i].resize(size_of_partition[i]);
     }
 
@@ -162,7 +177,7 @@ namespace label_propagation {
           (*prev_label_pb)[i](j, class_label) = 1.0;
         } else {
           // uniform
-          (*prev_label_pb)[i].row(j).fill(BASELINE_PROB);
+          (*prev_label_pb)[i].row(j).setConstant(BASELINE_PROB);
         }
       });
     }
@@ -185,7 +200,7 @@ namespace label_propagation {
            FLOAT_TYPE weight = use_edge_weight ? (flex_float)scope.edge()[2] : 1.0;
 
            {
-             arma::Row<FLOAT_TYPE> delta = (*prev_label_pb)[source_addr.partition_id].row(source_addr.local_id) * weight;
+             auto delta = (*prev_label_pb)[source_addr.partition_id].row(source_addr.local_id) * weight;
              auto& mtx = vertex_locks[target_addr.partition_id][target_addr.local_id];
              std::lock_guard<mutex> lock(mtx);
              (*current_label_pb)[target_addr.partition_id].row(target_addr.local_id) += delta;
@@ -193,7 +208,7 @@ namespace label_propagation {
 
            // Propagate from target to source 
            if (undirected) {
-             arma::Row<FLOAT_TYPE> delta = (*prev_label_pb)[target_addr.partition_id].row(target_addr.local_id) * weight;
+             auto delta = (*prev_label_pb)[target_addr.partition_id].row(target_addr.local_id) * weight;
              auto& mtx = vertex_locks[source_addr.partition_id][source_addr.local_id];
              std::lock_guard<mutex> lock(mtx);
              (*current_label_pb)[source_addr.partition_id].row(source_addr.local_id) += delta;
@@ -218,7 +233,7 @@ namespace label_propagation {
 
       // initialize with the self weight of the the previous label value
       for (size_t i = 0; i < num_partitions; ++i) {
-        (*current_label_pb)[i] = (*prev_label_pb)[i].X() * self_weight;
+        (*current_label_pb)[i] = (*prev_label_pb)[i] * self_weight;
       }
 
       // Label Propagation
@@ -235,17 +250,14 @@ namespace label_propagation {
         size_t num_vertices_in_partition = vertex_labels[i].size();
         parallel_for (0, num_vertices_in_partition, [&](size_t j) {
           if (!vertex_labels[i][j].is_na()) {
-            (*current_label_pb)[i].row(j).zeros();
+            (*current_label_pb)[i].row(j).setZero();
             size_t class_label = vertex_labels[i][j];
             (*current_label_pb)[i](j, class_label) = 1.0;
           } else {
-            (*current_label_pb)[i].row(j) /= arma::sum((*current_label_pb)[i].row(j));
+            (*current_label_pb)[i].row(j) /= (*current_label_pb)[i].row(j).sum();
           }
         });
-        double diff = 0.0;
-        for (size_t j = 0; j < (*current_label_pb)[i].n_rows; ++j) {
-          diff += arma::norm((*current_label_pb)[i].row(j) - (*prev_label_pb)[i].row(j));
-        }
+        auto diff = (((*current_label_pb)[i] - (*prev_label_pb)[i]).rowwise().norm().sum());
         total_l2_diff += diff;
       }
 
@@ -276,7 +288,8 @@ namespace label_propagation {
       matrix_type& mat = (*prev_label_pb)[i];
       parallel_for(0, num_vertices_in_partition, [&](size_t rowid) {
         // Get the index of the largest value in the row, and store it in preds[rowid]
-        size_t best_class_id = arma::index_max(mat.row(rowid));
+        int best_class_id = -1;
+        mat.row(rowid).maxCoeff(&best_class_id);
         // If we still get uniform distribution, output NONE
         if (fabs(mat(rowid, best_class_id) - BASELINE_PROB) < EPSILON) {
           preds[rowid] = FLEX_UNDEFINED;
@@ -287,12 +300,16 @@ namespace label_propagation {
     }
     g.add_vertex_field(predicted_labels, PREDICTED_LABEL_COLUMN_NAME, flex_type_enum::INTEGER);
 
+    // Write the probability vector back to graph vertex data
+    typedef Eigen::Map<Eigen::Matrix<double, 1, Eigen::Dynamic, Eigen::RowMajor>>
+        vector_buffer_type;
+
     // output_columns[class_index][partition_index]
     std::vector<std::vector<std::shared_ptr<sarray<flexible_type>>>> output_columns(num_classes);
     for (auto& c : output_columns) c.resize(num_partitions);
 
     parallel_for(0, num_partitions, [&](size_t i) {
-      size_t num_rows = (*prev_label_pb)[i].n_rows;
+      size_t num_rows = (*prev_label_pb)[i].rows();
 
       std::vector<sarray<flexible_type>::iterator>
         out_iterators(num_classes);
@@ -308,10 +325,12 @@ namespace label_propagation {
 
       // write to sarray
       flex_vec raw_buffer(num_classes);
+      vector_buffer_type mapped_buffer(&(raw_buffer[0]),
+                                       num_classes);
       for (size_t j = 0; j < num_rows; ++j) {
-      arma::Row<FLOAT_TYPE> row = (*prev_label_pb)[i].row(j);
+        mapped_buffer = ((*prev_label_pb)[i].row(j)).template cast<double>();
         for (size_t k = 0; k < num_classes; ++k) {
-          *(out_iterators[k])++ = row[k];
+          *(out_iterators[k])++ = raw_buffer[k];
         }
       }
 
@@ -333,13 +352,13 @@ namespace label_propagation {
   /*                             Main Function                              */
   /*                                                                        */
   /**************************************************************************/
-  toolkit_function_response_type exec(toolkit_function_invocation& invoke) {
+  variant_map_type exec(variant_map_type& params) {
 
     timer mytimer;
-    setup(invoke);
+    setup(params);
 
     std::shared_ptr<unity_sgraph> source_graph =
-        safe_varmap_get<std::shared_ptr<unity_sgraph>>(invoke.params, "graph");
+        safe_varmap_get<std::shared_ptr<unity_sgraph>>(params, "graph");
     ASSERT_TRUE(source_graph != NULL);
     sgraph& source_sgraph = source_graph->get_graph();
 
@@ -365,56 +384,37 @@ namespace label_propagation {
     }
 
     std::shared_ptr<unity_sgraph> result_graph(new unity_sgraph(std::make_shared<sgraph>(g)));
-    variant_map_type params;
-    params["graph"] = to_variant(result_graph);
-    params["labels"] = to_variant(result_graph->get_vertices());
-    params["delta"] = average_l2_delta;
-    params["training_time"] = mytimer.current_time();
-    params["num_iterations"] = num_iter;
-    params["self_weight"] = self_weight;
-    params["weight_field"] = weight_field;
-    params["undirected"] = undirected;
-    params["label_field"] = label_field;
-    params["threshold"] = threshold;
+    variant_map_type model_params;
+    model_params["graph"] = to_variant(result_graph);
+    model_params["labels"] = to_variant(result_graph->get_vertices());
+    model_params["delta"] = average_l2_delta;
+    model_params["training_time"] = mytimer.current_time();
+    model_params["num_iterations"] = num_iter;
+    model_params["self_weight"] = self_weight;
+    model_params["weight_field"] = weight_field;
+    model_params["undirected"] = undirected;
+    model_params["label_field"] = label_field;
+    model_params["threshold"] = threshold;
 
-    toolkit_function_response_type response;
-    response.params["model"]= to_variant(std::make_shared<simple_model>(params));
-    response.success = true;
+    variant_map_type response;
+    response["model"]= to_variant(std::make_shared<simple_model>(model_params));
     return response;
   }
 
-  static const variant_map_type DEFAULT_OPTIONS {
-    {"threshold", 1E-3},
-    {"weight_field", ""},
-    {"self_weight", 1.0},
-    {"undirected", false},
-    {"max_iterations", -1},
-  };
-
-  toolkit_function_response_type get_default_options(toolkit_function_invocation& invoke) {
-    toolkit_function_response_type response;
-    response.success = true;
-    response.params = DEFAULT_OPTIONS;
-    return response;
-  }
-
-  static const variant_map_type MODEL_FIELDS {
-    {"graph", "A new SGraph with the label probability as new vertex property"},
-    {"labels", "An SFrame with label probability for each vertex"},
-    {"delta", "Change of class probability in average L2 norm"},
-    {"training_time", "Total training time of the model"},
-    {"num_iterations", "Number of iterations"},
-    {"threshold", "The convergence threshold in average L2 norm"},
-    {"weight_field", "Edge weight field for weighted propagation"},
-    {"self_weight", "Weight for self edge"},
-    {"undirected", "If true, treat edge as undirected and propagate in both directions"}
-  };
-
-  toolkit_function_response_type get_model_fields(toolkit_function_invocation& invoke) {
-    toolkit_function_response_type response;
-    response.success = true;
-    response.params = MODEL_FIELDS;
-    return response;
+  variant_map_type get_model_fields(variant_map_type& params) {
+    return {
+      {"graph",
+       "A new SGraph with the label probability as new vertex property"},
+      {"labels", "An SFrame with label probability for each vertex"},
+      {"delta", "Change of class probability in average L2 norm"},
+      {"training_time", "Total training time of the model"},
+      {"num_iterations", "Number of iterations"},
+      {"threshold", "The convergence threshold in average L2 norm"},
+      {"weight_field", "Edge weight field for weighted propagation"},
+      {"self_weight", "Weight for self edge"},
+      {"undirected",
+       "If true, treat edge as undirected and propagate in both directions"}
+    };
   }
 
   /**************************************************************************/
@@ -422,20 +422,10 @@ namespace label_propagation {
   /*                          Toolkit Registration                          */
   /*                                                                        */
   /**************************************************************************/
-  EXPORT std::vector<toolkit_function_specification> get_toolkit_function_registration() {
-    toolkit_function_specification main_spec;
-    main_spec.name = "label_propagation";
-    main_spec.toolkit_execute_function = exec;
-    main_spec.default_options = DEFAULT_OPTIONS;
+BEGIN_FUNCTION_REGISTRATION
+REGISTER_NAMED_FUNCTION("create", exec, "params");
+REGISTER_FUNCTION(get_model_fields, "params");
+END_FUNCTION_REGISTRATION
 
-    toolkit_function_specification option_spec;
-    option_spec.name = "label_propagation_default_options";
-    option_spec.toolkit_execute_function = get_default_options;
-
-    toolkit_function_specification model_spec;
-    model_spec.name = "label_propagation_model_fields";
-    model_spec.toolkit_execute_function = get_model_fields;
-    return {main_spec, option_spec, model_spec};
-  }
 } // end of namespace label_propagation
 } // end of namespace turi

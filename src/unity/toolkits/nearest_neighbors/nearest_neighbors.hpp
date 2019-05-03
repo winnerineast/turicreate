@@ -21,23 +21,23 @@
 #include <unity/lib/toolkit_function_specification.hpp>
 #include <unity/lib/variant.hpp>
 #include <unity/lib/unity_base_types.hpp>
-#include <unity/toolkits/ml_model/ml_model.hpp>
+#include <unity/lib/extensions/ml_model.hpp>
 #include <unity/toolkits/util/algorithmic_utils.hpp>
-#include <toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
+#include <unity/toolkits/supervised_learning/supervised_learning_utils-inl.hpp>
 
 #include <unity/toolkits/nearest_neighbors/distance_functions.hpp>
 
 #include <export.hpp>
-#include <numerics/armadillo.hpp>
-#include <numerics/armadillo.hpp>
+#include <Eigen/Core>
+#include <Eigen/SparseCore>
 
 namespace turi {
 namespace nearest_neighbors {
 
 typedef std::tuple<std::vector<std::string>, function_closure_info, double> dist_component_type;
 
-} 
-} 
+}
+}
 
 BEGIN_OUT_OF_PLACE_SAVE(arc, turi::nearest_neighbors::dist_component_type, d) {
   std::map<std::string, turi::variant_type> data;
@@ -57,7 +57,7 @@ BEGIN_OUT_OF_PLACE_LOAD(arc, turi::nearest_neighbors::dist_component_type, d) {
   __EXTRACT(column_names);
   __EXTRACT(weight);
 #undef __EXTRACT
-  arc >> distance_info;  
+  arc >> distance_info;
   d = std::make_tuple(column_names, distance_info, weight);
 
 } END_OUT_OF_PLACE_LOAD()
@@ -306,25 +306,8 @@ class EXPORT nearest_neighbors_model : public ml_model_base {
  public: 
 
   nearest_neighbors_model();
-  /**
-   * Clone objects to a nearest_neighbors_model class
-   *
-   * \returns A new model with the same things in it.
-   *
-   * \ref model_base for details.
-   */
-  virtual nearest_neighbors_model* nearest_neighbors_clone() = 0;
 
   virtual ~nearest_neighbors_model(){}
-
-  /**
-   * Returns the name of the model.
-   *
-   * \returns Name of the model.
-   *
-   * \ref model_base for details.
-   */
-  virtual std::string name() = 0;
 
   /**
    * Create a nearest neighbors reference object without input reference labels.
@@ -464,13 +447,6 @@ class EXPORT nearest_neighbors_model : public ml_model_base {
  public:
 
   /**
-   * Makes a copy of this model object.
-   *
-   * \ref model_base for details.
-   */
-  ml_model_base* ml_model_base_clone();
-
-  /**
    * Get training stats.
    *
    * \returns The training stat map.
@@ -554,9 +530,14 @@ class EXPORT nearest_neighbors_model : public ml_model_base {
                                    const sframe& X,
                                    const function_closure_info distance_name,
                                    const double weight);
+
+  /**
+   * Get reference data as a vector of vectors
+   * \returns Reference data as a vector of vectors (in ml-data form)
+   */
+  flexible_type get_reference_data() const;
+
 };
-
-
 
 // -----------------------------------------------------------------------------
 // CANDIDATE NEIGHBORS CLASS
@@ -670,6 +651,12 @@ class neighbor_candidates {
   double get_max_dist() const;
 };
 
+/**
+ * Function to get the reference data from the NN model
+ *
+ * \param[in] model Nearest neighbour model.
+ */
+flexible_type _nn_get_reference_data(std::shared_ptr<nearest_neighbors_model> model);
 
 }  // namespace nearest_neighbors
 }  // namespace turi

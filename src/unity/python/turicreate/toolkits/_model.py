@@ -11,15 +11,16 @@ Defines a basic interface for a model object.
 from __future__ import print_function as _
 from __future__ import division as _
 from __future__ import absolute_import as _
-import json
 
 import turicreate as _tc
-import turicreate.connect.main as glconnect
+import turicreate._connect.main as glconnect
 from turicreate.data_structures.sframe import SFrame as _SFrame
+import turicreate.extensions as _extensions
+from turicreate.extensions import _wrap_function_return
 from turicreate.toolkits._internal_utils import _toolkit_serialize_summary_struct
 from turicreate.util import _make_internal_url
 from turicreate.toolkits._main import ToolkitError
-import turicreate.util.file_util as file_util
+import turicreate.util._file_util as file_util
 import os
 from copy import copy as _copy
 import six as _six
@@ -63,12 +64,12 @@ def load_model(location):
         else:
             import posixpath
             dir_archive_exists = file_util.exists(posixpath.join(model_path, 'dir_archive.ini'))
-    model = None
     if not dir_archive_exists:
         raise IOError("Directory %s does not exist" % location)
 
     _internal_url = _make_internal_url(location)
     saved_state = glconnect.get_unity().load_model(_internal_url)
+    saved_state = _wrap_function_return(saved_state)
     # The archive version could be both bytes/unicode
     key = u'archive_version'
     archive_version = saved_state[key] if key in saved_state else saved_state[key.encode()]
@@ -79,16 +80,24 @@ def load_model(location):
                            "This model looks to have been saved with a future version of Turi Create.\n"
                            "Please upgrade Turi Create before attempting to load this model file.")
     elif archive_version == 1:
-        cls = MODEL_NAME_MAP[saved_state['model_name']]
-        if 'model' in saved_state:
-            # this is a native model
-            return cls(saved_state['model'])
+        name = saved_state['model_name'];
+        if name in MODEL_NAME_MAP: 
+            cls = MODEL_NAME_MAP[name]
+
+            if 'model' in saved_state:
+                # this is a native model
+                return cls(saved_state['model'])
+            else:
+                # this is a CustomModel
+                model_data = saved_state['side_data']
+                model_version = model_data['model_version']
+                del model_data['model_version']
+                return cls._load_version(model_data, model_version)
+
+        elif hasattr(_extensions, name):
+            return saved_state["model"]
         else:
-            # this is a CustomModel
-            model_data = saved_state['side_data']
-            model_version = model_data['model_version']
-            del model_data['model_version']
-            return cls._load_version(model_data, model_version)
+            raise ToolkitError("Unable to load model of name '%s'; model name not registered." % name)
     else:
         # very legacy model format. Attempt pickle loading
         import sys
@@ -463,6 +472,7 @@ class Model(ExposeAttributesFromProxy):
         elif output == 'dict':
             return _toolkit_serialize_summary_struct( self, \
                                             *self._get_summary_struct() )
+
         try:
             print(self.__repr__())
         except:
@@ -634,7 +644,7 @@ class CustomModel(ExposeAttributesFromProxy):
         raise NotImplementedError("_get_version not implemented")
 
     def __getitem__(self, key):
-        return self.get(key)
+        return self._get(key)
 
     def _get_native_state(self):
         raise NotImplementedError("_get_native_state not implemented")
@@ -662,7 +672,8 @@ class CustomModel(ExposeAttributesFromProxy):
         import copy
         state = copy.copy(self._get_native_state())
         state['model_version'] = self._get_version()
-        return glconnect.get_unity().save_model2(self.__class__._native_name(), location, state)
+        return glconnect.get_unity().save_model2(
+            self.__class__._native_name(), _make_internal_url(location), state)
 
     @classmethod
     def _native_name(cls):

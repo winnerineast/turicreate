@@ -15,11 +15,9 @@ import turicreate.toolkits._supervised_learning as _sl
 import turicreate.toolkits._main as _toolkits_main
 from turicreate.toolkits._internal_utils import _toolkit_repr_print
 from turicreate.toolkits._internal_utils import _raise_error_evaluation_metric_is_valid
-from turicreate.toolkits._internal_utils import _raise_error_if_column_exists
 
 from turicreate.toolkits._tree_model_mixin import TreeModelMixin as _TreeModelMixin
 
-from turicreate.toolkits._internal_utils import _raise_error_if_not_sframe
 from turicreate.toolkits._internal_utils import _map_unity_proxy_to_object
 from turicreate.util import _make_internal_url
 
@@ -222,7 +220,11 @@ class BoostedTreesRegression(_SupervisedLearningModel, _TreeModelMixin):
                    "model_type" : "boosted_trees",
                    "version": _turicreate.__version__,
                    "class": self.__class__.__name__,
-                   "short_description": short_description}
+                   "short_description": short_description,
+                   'user_defined':{
+                    'turicreate_version': _turicreate.__version__
+                   }
+                }
         self._export_coreml_impl(filename, context)
 
     def predict(self, dataset, missing_value_action='auto'):

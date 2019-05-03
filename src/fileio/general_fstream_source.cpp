@@ -21,6 +21,7 @@ general_fstream_source::general_fstream_source(std::string file,
 }
 
 void general_fstream_source::open_file(std::string file, bool gzip_compressed) {
+
   in_file = std::make_shared<union_fstream>(file, std::ios_base::in | std::ios_base::binary);
   is_gzip_compressed = gzip_compressed;
   if (gzip_compressed) {
@@ -68,6 +69,7 @@ std::streampos general_fstream_source::seek(std::streamoff off,
     return underlying_stream->tellg();
   } else {
     ASSERT_MSG(false, "Attempting to seek in a compressed file. Fail!");
+    ASSERT_UNREACHABLE();
   }
 }
 
