@@ -26,17 +26,17 @@ class EXPORT one_shot_object_detector: public ml_model_base {
   // Interface exposed via Unity server
 
   // TODO: augment -> train
-  gl_sframe augment(gl_sframe data,
+  gl_sframe augment(const gl_sframe &data,
                     const std::string& target_column_name,
-                    gl_sarray backgrounds,
-                    std::map<std::string, flexible_type> options);
+                    const gl_sarray &backgrounds,
+                    std::map<std::string, flexible_type> &options);
 
   BEGIN_CLASS_MEMBER_REGISTRATION("one_shot_object_detector")
 
   IMPORT_BASE_CLASS_REGISTRATION(ml_model_base);
 
   REGISTER_CLASS_MEMBER_FUNCTION(one_shot_object_detector::augment, "data",
-                                 "target_column_name", "backgrounds", "seed");
+                                 "target_column_name", "backgrounds", "options");
 
   END_CLASS_MEMBER_REGISTRATION
 
