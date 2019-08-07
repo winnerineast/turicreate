@@ -5,6 +5,8 @@
  */
 #import "VegaRenderer.h"
 #import "JSCanvas.h"
+#import "JSConsole.h"
+#import "JSDocument.h"
 
 #import <AppKit/AppKit.h>
 #import <JavaScriptCore/JavaScriptCore.h>
@@ -14,15 +16,33 @@
 #define IDENT(x) x
 #define PATH(x,y) QUOTE(IDENT(x)IDENT(y))
 
-#define VEGA_JS_H PATH(OBJROOT,/vega-4.4.0.min.js.h)
-#import VEGA_JS_H
-#define vega_js vega_4_4_0_min_js
-#define vega_js_size vega_4_4_0_min_js_len
+#ifdef NDEBUG
 
-#define VEGALITE_JS_H PATH(OBJROOT,/vega-lite-3.0.0-rc10.min.js.h)
+// release mode, use minified JS
+#define VEGA_JS_H PATH(OBJROOT,/vega-5.4.0.min.js.h)
+#import VEGA_JS_H
+#define vega_js vega_5_4_0_min_js
+#define vega_js_size vega_5_4_0_min_js_len
+
+#define VEGALITE_JS_H PATH(OBJROOT,/vega-lite-3.3.0.min.js.h)
 #import VEGALITE_JS_H
-#define vegalite_js vega_lite_3_0_0_rc10_min_js
-#define vegalite_js_size vega_lite_3_0_0_rc10_min_js_len
+#define vegalite_js vega_lite_3_3_0_min_js
+#define vegalite_js_size vega_lite_3_3_0_min_js_len
+
+#else
+
+// debug mode, use unminified JS
+#define VEGA_JS_H PATH(OBJROOT,/vega-5.4.0.js.h)
+#import VEGA_JS_H
+#define vega_js vega_5_4_0_js
+#define vega_js_size vega_5_4_0_js_len
+
+#define VEGALITE_JS_H PATH(OBJROOT,/vega-lite-3.3.0.js.h)
+#import VEGALITE_JS_H
+#define vegalite_js vega_lite_3_3_0_js
+#define vegalite_js_size vega_lite_3_3_0_js_len
+
+#endif
 
 @interface VegaRenderer ()
 
@@ -33,7 +53,7 @@
 
 @end
 
-@implementation VegaRenderer
+@implementation VegaRenderer 
 
 -(instancetype) initWithSpec:(NSString *)spec {
     return [self initWithSpec:spec context:[[NSGraphicsContext currentContext] CGContext]];
@@ -53,47 +73,22 @@
     @autoreleasepool {
 
         // set up logging
-        [self.context evaluateScript:@"var console = {};"];
-        self.context[@"console"][@"log"] = ^() {
-            NSArray *message = [JSContext currentArguments];
-            NSLog(@"JS console log: %@", message);
-        };
-        self.context[@"console"][@"warn"] = ^() {
-            NSArray *message = [JSContext currentArguments];
-            NSLog(@"JS console warning: %@", message);
-        };
-        self.context[@"console"][@"error"] = ^() {
-            NSArray *message = [JSContext currentArguments];
-            NSLog(@"JS console error: %@", message);
-            assert(false);
-        };
+        [JSConsole attachToJavaScriptContext:self.context];
 
-        // set up error handling
-        self.context.exceptionHandler = ^(JSContext *context, JSValue *exception) {
-            NSLog(@"Unhandled exception: %@", [exception toString]);
-            NSLog(@"In context: %@", [context debugDescription]);
-            assert(false);
-        };
+        VegaCGCanvas* vegaCanvas = [[VegaCGCanvas alloc] initWithContext:parentContext];
+        weakSelf.vegaCanvas = vegaCanvas;
 
-        JSValue *require = [JSValue valueWithObject:^(NSString *module) {
-            if ([module isEqualToString:@"canvas"]) {
-                JSValue *canvas2 = [JSValue valueWithObject:^(double width, double height) {
-                    weakSelf.vegaCanvas = [[VegaCGCanvas alloc] initWithWidth:width height:height context:parentContext];
-                    return weakSelf.vegaCanvas;
-                } inContext:weakSelf.context];
-                canvas2[@"Image"] = [JSValue valueWithObject:^() {
-                    assert([[JSContext currentArguments] count] == 0);
-                    return [[VegaCGImage alloc] init];
-                } inContext:weakSelf.context];
-                return canvas2;
-            }
+        VegaJSDocument* document = [[VegaJSDocument alloc] initWithCanvas:vegaCanvas];
+        self.context[@"document"] = document;
+        
+        // set up an element to contain Vega's canvas, referenced in vg2canvasJS
+        self.context[@"container"] = [[VegaHTMLElement alloc] initWithTagName:@"div"];
 
-            // fall through if we don't know what module it is
-            NSLog(@"Called require with unknown module %@", module);
-            return [JSValue valueWithNullInContext:weakSelf.context];
+        // set up Image type
+        self.context[@"Image"] = [JSValue valueWithObject:^() {
+            assert([[JSContext currentArguments] count] == 0);
+            return [[VegaCGImage alloc] init];
         } inContext:self.context];
-
-        [self.context setObject:require forKeyedSubscript:@"require"];
 
         [self.context evaluateScript:[VegaRenderer vegaJS]];
         [self.context evaluateScript:[VegaRenderer vegaliteJS]];
@@ -112,6 +107,9 @@
     // Make sure we don't have any extra properties on the dictionary
     // backing the JSValue. If we do, it means we missed some property
     // implementations on the JSExport protocol for this type.
+    if (self.vegaCanvas == nil) {
+        return nil;
+    }
     JSValue *jsVegaCanvas = [JSValue valueWithObject:self.vegaCanvas inContext:self.context];
     NSDictionary *jsVegaCanvasExtraProps = jsVegaCanvas.toDictionary;
     if (jsVegaCanvasExtraProps.count > 0) {
@@ -151,10 +149,10 @@
     CGContextScaleCTM(bitmapContext, scaleFactor, scaleFactor);
     CGLayerRef layer = self.vegaContext.layer;
     CGContextDrawLayerAtPoint(bitmapContext, CGPointMake(0, 0), layer);
-    CGImageRef bitmapImage = CGBitmapContextCreateImage(bitmapContext);
+    CGImageRef image = CGBitmapContextCreateImage(bitmapContext);
     CGColorSpaceRelease(colorSpace);
     CGContextRelease(bitmapContext);
-    return bitmapImage;
+    return image;
 }
 
 + (NSString*)vg2canvasJS {
@@ -170,7 +168,7 @@
     "    logLevel: vega.Warn,"
     "    renderer: 'canvas'"
     "  })"
-    "  .initialize()"
+    "  .initialize(container)"
     "  .runAsync()"
     "  .then(view => {"
     "    view.toCanvas().then(canvas => {"

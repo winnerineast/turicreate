@@ -29,14 +29,6 @@ def _get_client_app_path():
     if _sys.platform == 'linux2' or _sys.platform == 'linux':
         return _os.path.join(tcviz_dir, 'Turi Create Visualization', 'visualization_client')
 
-def _focus_client_app():
-    scpt = '''
-            delay .5
-            tell application \"Turi Create Visualization\" to activate
-            '''
-    focus = _Popen(['osascript', '-'], stdout=_PIPE, stdin=_PIPE)
-    focus.communicate(scpt.encode('utf-8'))
-
 def _run_cmdline(command):
     # runs a shell command
     p = _Popen(args=command, stdout=_PIPE, stderr=_PIPE, shell=True)
@@ -46,14 +38,16 @@ def _run_cmdline(command):
 
 def set_target(target='auto'):
     """
-    Sets the target for visualizations launched with the `show` or `explore`
-    methods. If unset, or if target is not provided, defaults to 'auto'.
+    Sets the target for visualizations launched with the `show`
+    method. If unset, or if target is not provided, defaults to 'auto'.
 
     Notes
     -----
     - When in 'auto' target, `show` will display plot output inline when in
-      Jupyter Notebook, and otherwise will open a native GUI window on macOS
-      and Linux.
+      Jupyter Notebook, and otherwise will open a native GUI window.
+    - Only `show` can render inline in Jupyter Notebook or a browser.
+      `explore` and `annotate` ignore this setting and open a GUI window
+      unless target is set to `None`.
 
     Parameters
     ----------
@@ -62,12 +56,13 @@ def set_target(target='auto'):
         Possible values are:
         * 'auto': display plot output inline when in Jupyter Notebook, and
           otherwise launch a native GUI window.
+        * 'browser': opens a web browser pointing to http://localhost.
         * 'gui': always launch a native GUI window.
         * 'none': prevent all visualizations from being displayed.
     """
     global _target
-    if target not in ['auto', 'gui', 'none']:
-        raise ValueError("Expected target to be one of: 'auto', 'gui', 'none'.")
+    if target not in ['auto', 'browser', 'gui', 'none']:
+        raise ValueError("Expected target to be one of: 'auto', 'browser', 'gui', 'none'.")
     _target = target
 
 
@@ -96,11 +91,12 @@ class Plot(object):
     >>> plt.save('vega_spec.json', False)
 
     """
-    def __init__(self, _proxy=None):
-        if (_proxy):
-            self.__proxy__ = _proxy
+    def __init__(self, vega_spec=None, _proxy=None):
+        if vega_spec is not None:
+            import turicreate as tc
+            self.__proxy__ = tc.extensions.plot_from_vega_spec(vega_spec)
         else:
-            self.__proxy__ = None
+            self.__proxy__ = _proxy
 
     def show(self):
         """
@@ -108,8 +104,8 @@ class Plot(object):
 
         Notes
         -----
-        - The plot will render either inline in a Jupyter Notebook, or in a
-          native GUI window, depending on the value provided in
+        - The plot will render either inline in a Jupyter Notebook, in a web
+          browser, or in a native GUI window, depending on the value provided in
           `turicreate.visualization.set_target` (defaults to 'auto').
 
         Examples
@@ -127,25 +123,39 @@ class Plot(object):
         if _target == 'none':
             return
 
-        display = False
         try:
             if _target == 'auto' and \
                get_ipython().__class__.__name__ == "ZMQInteractiveShell":
                 self._repr_javascript_()
-                display = True
+                return
         except NameError:
             pass
-        finally:
-            if not display:
-                if _sys.platform != 'darwin' and _sys.platform != 'linux2' and _sys.platform != 'linux':
-                     raise NotImplementedError('Visualization is currently supported only on macOS and Linux.')
 
-                path_to_client = _get_client_app_path()
+        path_to_client = _get_client_app_path()
 
-                # TODO: allow autodetection of light/dark mode.
-                # Disabled for now, since the GUI side needs some work (ie. background color).
-                plot_variation = 0x10 # force light mode
-                self.__proxy__.call_function('show', {'path_to_client': path_to_client, 'variation': plot_variation})
+        if _target == 'browser':
+            # First, make sure TURI_VISUALIZATION_WEB_SERVER_ROOT_DIRECTORY is set
+            import turicreate as tc
+            if (tc.config.get_runtime_config()['TURI_VISUALIZATION_WEB_SERVER_ROOT_DIRECTORY'] == ''):
+                tc.config.set_runtime_config('TURI_VISUALIZATION_WEB_SERVER_ROOT_DIRECTORY',
+                    _os.path.abspath(_os.path.join(_os.path.dirname(path_to_client), '..', 'Resources', 'build'))
+                )
+
+            import webbrowser
+            url = self.get_url()
+            webbrowser.open_new_tab(url)
+            return
+
+        # _target can only be one of ['auto', 'browser', 'gui', 'none'].
+        # We have already returned early for auto (in Jupyter Notebook) and
+        # browser. At this point, we expect _target to be either "auto"
+        # (not in Jupyter Notebook) or "gui". This is enforced in set_target.
+        # Thus, proceed to launch the GUI.
+
+        # TODO: allow autodetection of light/dark mode.
+        # Disabled for now, since the GUI side needs some work (ie. background color).
+        plot_variation = 0x10 # force light mode
+        self.__proxy__.call_function('show', {'path_to_client': path_to_client, 'variation': plot_variation})
 
     def save(self, filepath):
         """
@@ -265,6 +275,16 @@ class Plot(object):
     def materialize(self):
         self.__proxy__.call_function('materialize')
 
+    def get_url(self):
+        """
+        Returns a URL to the Plot hosted as a web page.
+
+        Notes
+        --------
+        The URL will be served by Turi Create on http://localhost.
+        """
+        return self.__proxy__.call_function('get_url')
+
     def _repr_javascript_(self):
         from IPython.core.display import display, HTML
 
@@ -273,8 +293,8 @@ class Plot(object):
 
         vega_html = '<html lang="en"> \
                         <head> \
-                            <script src="https://cdnjs.cloudflare.com/ajax/libs/vega/3.0.8/vega.js"></script> \
-                            <script src="https://cdnjs.cloudflare.com/ajax/libs/vega-embed/3.0.0-rc7/vega-embed.js"></script> \
+                            <script src="https://cdnjs.cloudflare.com/ajax/libs/vega/5.4.0/vega.js"></script> \
+                            <script src="https://cdnjs.cloudflare.com/ajax/libs/vega-embed/4.0.0/vega-embed.js"></script> \
                             <script src="https://cdnjs.cloudflare.com/ajax/libs/vega-tooltip/0.5.1/vega-tooltip.min.js"></script> \
                             <link rel="stylesheet" type="text/css" href="https://cdnjs.cloudflare.com/ajax/libs/vega-tooltip/0.5.1/vega-tooltip.min.css"> \
                             <style> \
@@ -327,3 +347,104 @@ class Plot(object):
                     </iframe> \
                 </body> \
             </html>'));
+
+def display_table_in_notebook(sf):
+    from IPython.core.display import display
+    from PIL import Image
+
+    import base64
+    from io import BytesIO
+    from IPython.display import HTML
+    from ..data_structures.image import Image as _Image
+
+    def image_formatter(im):
+        image_buffer = BytesIO()
+        im.save(image_buffer, format='PNG')
+        return "<img src=\"data:image/png;base64," + base64.b64encode(image_buffer.getvalue()) + "\"/>"
+
+    import pandas as pd
+    maximum_rows = 100
+    if len(sf) > maximum_rows:
+        import warnings
+        warnings.warn('Displaying only the first {} rows.'.format(maximum_rows))
+        sf = sf[:maximum_rows]
+    
+    check_image_column = [_Image == x for x in sf.column_types()]
+    zipped_image_columns = zip(sf.column_names(), check_image_column)
+    image_columns = filter(lambda a: a[1], zipped_image_columns)
+    image_key = [x[0] for x in image_columns]
+    image_column_formatter = dict.fromkeys(image_key , image_formatter)
+
+    with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.max_colwidth', -1):
+        df = sf.to_dataframe()
+        html_string =  '<html lang="en">                           \
+                          <head>                                   \
+                            <style>                                \
+                              .sframe {                            \
+                                font-size: 12px;                   \
+                                font-family: HelveticaNeue;        \
+                                border: 1px solid silver;          \
+                              }                                    \
+                              .sframe thead th {                   \
+                                background: #F7F7F7;               \
+                                font-family: HelveticaNeue-Medium; \
+                                font-size: 14px;                   \
+                                line-height: 16.8px;               \
+                                padding-top: 16px;                 \
+                                padding-bottom: 16px;              \
+                                padding-left: 10px;                \
+                                padding-right: 38px;               \
+                                border-top: 1px solid #E9E9E9;     \
+                                border-bottom: 1px solid #E9E9E9;  \
+                                white-space: nowrap;               \
+                                overflow: hidden;                  \
+                                text-overflow:ellipsis;            \
+                                text-align:center;                 \
+                                font-weight:normal;                \
+                              }                                    \
+                              .sframe tbody th {                   \
+                                background: #FFFFFF;               \
+                                text-align:left;                   \
+                                font-weight:normal;                \
+                                border-right: 1px solid #E9E9E9;   \
+                              }                                    \
+                              .sframe td {                         \
+                                background: #FFFFFF;               \
+                                padding-left: 10px;                \
+                                padding-right: 38px;               \
+                                padding-top: 14px;                 \
+                                padding-bottom: 14px;              \
+                                border-bottom: 1px solid #E9E9E9;  \
+                                max-height: 0px;                   \
+                                transition: max-height 5s ease-out;\
+                                vertical-align: middle;            \
+                                font-family: HelveticaNeue;        \
+                                font-size: 12px;                   \
+                                line-height: 16.8px;               \
+                                background: #FFFFFF;               \
+                              }                                    \
+                              .sframe tr {                         \
+                                padding-left: 10px;                \
+                                padding-right: 38px;               \
+                                padding-top: 14px;                 \
+                                padding-bottom: 14px;              \
+                                border-bottom: 1px solid #E9E9E9;  \
+                                max-height: 0px;                   \
+                                transition: max-height 5s ease-out;\
+                                vertical-align: middle;            \
+                                font-family: HelveticaNeue;        \
+                                font-size: 12px;                   \
+                                line-height: 16.8px;               \
+                                background: #FFFFFF;               \
+                              }                                    \
+                              .sframe tr:hover {                   \
+                                background: silver;                \
+                              },                                   \
+                            </style>                               \
+                          </head>                                  \
+                          <body>                                   \
+                            '+df.to_html(formatters=image_column_formatter, escape=False, classes='sframe')+'\
+                          </body>                                  \
+                        </html>'
+
+        display(HTML(html_string))

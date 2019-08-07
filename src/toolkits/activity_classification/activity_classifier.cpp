@@ -53,91 +53,67 @@ constexpr float LSTM_CELL_CLIP_THRESHOLD = 50000.f;
 // into TCMPS.
 // TODO: These should be exposed in a way that facilitates experimentation.
 // TODO: A struct instead of a map would be nice, too.
-float_array_map get_training_config(size_t prediction_window) {
+// TODO: And that should really happen before we deploy to Apple platforms where
+//       float and int don't have the same size.
+float_array_map get_training_config(size_t prediction_window,
+                                    int random_seed) {
+  static_assert(sizeof(float) == sizeof(int),
+                "Passing random seed assumes float and int have same size.");
+  float random_seed_float = *reinterpret_cast<float*>(&random_seed);
+
   return {
     { "ac_pred_window", shared_float_array::wrap(prediction_window) },
     { "ac_seq_len", shared_float_array::wrap(NUM_PREDICTIONS_PER_CHUNK) },
     { "mode", shared_float_array::wrap(0.f) },  // kLowLevelModeTrain
+    { "random_seed", shared_float_array::wrap(random_seed_float) },
   };
 }
 float_array_map get_inference_config(size_t prediction_window) {
-  float_array_map config = get_training_config(prediction_window);
-  config["mode"] = shared_float_array::wrap(1.f);  // kLowLevelModeInference
-  return config;
+  return {
+    { "ac_pred_window", shared_float_array::wrap(prediction_window) },
+    { "ac_seq_len", shared_float_array::wrap(NUM_PREDICTIONS_PER_CHUNK) },
+    { "mode", shared_float_array::wrap(1.f) },  // kLowLevelModeInference
+  };
 }
 
 size_t count_correct_predictions(size_t num_classes, const shared_float_array& output_chunk,
-    const shared_float_array& label_chunk, size_t num_predictions) {
+    const shared_float_array& label_chunk, size_t num_samples, size_t prediction_window) {
 
   const float* output_ptr = output_chunk.data();
   const float* truth_ptr = label_chunk.data();
+  
   size_t num_correct_predictions = 0;
 
-  for (size_t i = 0; i < num_predictions; i++) {
-
+  for (size_t i = 0; i < num_samples; i+=prediction_window) {
     size_t prediction = std::max_element(output_ptr, output_ptr + num_classes) - output_ptr;
-    if (prediction == *truth_ptr) {
-      num_correct_predictions += 1;
+    for (size_t j = 0; j < std::min(prediction_window, num_samples-i); j++) {
+      if (prediction == *truth_ptr) {
+        num_correct_predictions += 1;
+      }
+      truth_ptr++;
     }
-    truth_ptr++;
     output_ptr += num_classes;
   }
   return num_correct_predictions;
 }
 
-float cumulative_chunk_accuracy(size_t prediction_window, size_t num_classes,
-                                const shared_float_array &output,
-                                const data_iterator::batch &batch) {
-
-  float cumulative_per_batch_accuracy = 0.f;
+std::tuple<size_t, size_t> cumulative_chunk_accuracy(
+    size_t prediction_window, size_t num_classes,
+    const shared_float_array& output, const data_iterator::batch& batch) {
+  size_t num_correct = 0;
+  size_t num_samples = 0;
 
   for (size_t i = 0; i < batch.batch_info.size(); ++i){
 
     const shared_float_array& output_chunk = output[i];
-    const shared_float_array& label_chunk = batch.labels[i];
+    const shared_float_array& label_chunk = batch.labels_per_row[i];
     data_iterator::batch::chunk_info info = batch.batch_info[i];
-    size_t num_predictions = (info.num_samples + prediction_window - 1) / prediction_window;
-    size_t num_correct_predictions = count_correct_predictions(num_classes, output_chunk, label_chunk, num_predictions);
-
-
-    cumulative_per_batch_accuracy += static_cast<float>(num_correct_predictions) / num_predictions;
-
+    size_t num_correct_predictions = count_correct_predictions(num_classes, output_chunk, label_chunk, info.num_samples, prediction_window);
+    num_correct += num_correct_predictions;
+    num_samples += info.num_samples;
   }
 
-  return cumulative_per_batch_accuracy;
-}
-
-// Randomly split an SFrame into two SFrames based on the `session_id` such
-// that one split contains data for a `fraction` of the sessions while the
-// second split contains all data for the rest of the sessions.
-std::tuple<gl_sframe, gl_sframe> random_split_by_session(gl_sframe data, std::string session_id_column_name, float fraction, size_t seed) {
-  if (std::find(data.column_names().begin(), data.column_names().end(),
-                  session_id_column_name) == data.column_names().end()) {
-    log_and_throw("Input dataset must contain a column called " +
-                  session_id_column_name);
-  }
-
-  if (fraction < 0.f || fraction > 1.f) {
-    log_and_throw("Fraction specified must be between 0 and 1");
-  }
-  // Create a random binary filter (boolean SArray), using the same probability
-  // across all lines that belong to the same session. In expectancy - the
-  // desired fraction of the sessions will go to the training set. Since boolean
-  // filters preserve order - there is no need to re-sort the lines within each
-  // session. The boolean filter is a pseudorandom function of the session_id
-  // and the global seed above, allowing the train-test split to vary across
-  // runs using the same dataset.
-  auto random_session_pick = [fraction](size_t session_id_hash) {
-    std::default_random_engine generator(session_id_hash);
-    std::uniform_real_distribution<float> dis(0.f, 1.f);
-    return dis(generator) < fraction;
-  };
-
-  gl_sarray chosen_filter = data[session_id_column_name].hash(seed).apply(random_session_pick, flex_type_enum::INTEGER);
-  gl_sframe train = data[chosen_filter];
-  gl_sframe val =  data[1-chosen_filter];
-
-  return std::make_tuple(train,val);
+  return std::make_tuple(num_correct, num_samples);
 }
 
 struct result {
@@ -196,12 +172,67 @@ void activity_classifier::init_options(
       10,
       1,
       std::numeric_limits<int>::max());
+  options.create_boolean_option(
+      "use_data_augmentation",
+      "Data augmentation helps use prediction window started with random "
+      "offset."
+      " If set to True, the trained model uses augmented data.",
+      false);
+  options.create_integer_option(
+      "random_seed",
+      "Seed for random weight initialization and sampling during training",
+      FLEX_UNDEFINED,
+      std::numeric_limits<int>::min(),
+      std::numeric_limits<int>::max());
 
   // Validate user-provided options.
   options.set_options(opts);
 
+  // Choose a random seed if not set.
+  if (options.value("random_seed") == FLEX_UNDEFINED) {
+    std::random_device random_device;
+    int random_seed = static_cast<int>(random_device());
+    options.set_option("random_seed", random_seed);
+  }
+
   // Write model fields.
   add_or_update_state(flexmap_to_varmap(options.current_option_values()));
+}
+
+// Randomly split an SFrame into two SFrames based on the `session_id` such
+// that one split contains data for a `fraction` of the sessions while the
+// second split contains all data for the rest of the sessions.
+std::tuple<gl_sframe, gl_sframe> activity_classifier::random_split_by_session(
+    gl_sframe data, std::string session_id_column_name, float fraction,
+    size_t seed) {
+  if (std::find(data.column_names().begin(), data.column_names().end(),
+                session_id_column_name) == data.column_names().end()) {
+    log_and_throw("Input dataset must contain a column called " +
+                  session_id_column_name);
+  }
+
+  if (fraction < 0.f || fraction > 1.f) {
+    log_and_throw("Fraction specified must be between 0 and 1");
+  }
+  // Create a random binary filter (boolean SArray), using the same probability
+  // across all lines that belong to the same session. In expectancy - the
+  // desired fraction of the sessions will go to the training set. Since boolean
+  // filters preserve order - there is no need to re-sort the lines within each
+  // session. The boolean filter is a pseudorandom function of the session_id
+  // and the global seed above, allowing the train-test split to vary across
+  // runs using the same dataset.
+  auto random_session_pick = [fraction](size_t session_id_hash) {
+    std::default_random_engine generator(session_id_hash);
+    std::uniform_real_distribution<float> dis(0.f, 1.f);
+    return dis(generator) < fraction;
+  };
+
+  gl_sarray chosen_filter = data[session_id_column_name].hash(seed).apply(
+      random_session_pick, flex_type_enum::INTEGER);
+  gl_sframe train = data[chosen_filter];
+  gl_sframe val = data[1 - chosen_filter];
+
+  return std::make_tuple(train, val);
 }
 
 // Returns the validation accuracy and validation loss respectively as a tuple
@@ -211,7 +242,8 @@ std::tuple<float, float> activity_classifier::compute_validation_metrics(
 
   float cumulative_val_loss = 0.f;
   size_t val_size = 0;
-  float cumulative_val_accuracy = 0.f;
+  size_t val_num_correct = 0;
+  size_t val_num_samples = 0;
   validation_data_iterator_->reset();
 
   // To support double buffering, use a queue of pending inference results.
@@ -225,8 +257,13 @@ std::tuple<float, float> activity_classifier::compute_validation_metrics(
       result batch = pending_batches.front();
       pending_batches.pop();
 
-      cumulative_val_accuracy += cumulative_chunk_accuracy(prediction_window, num_classes, batch.output_info, batch.data_info);
-
+      size_t batch_num_correct = 0;
+      size_t batch_num_samples = 0;
+      std::tie(batch_num_correct, batch_num_samples) =
+          cumulative_chunk_accuracy(prediction_window, num_classes,
+                                    batch.output_info, batch.data_info);
+      val_num_correct += batch_num_correct;
+      val_num_samples += batch_num_samples;
       float val_loss = std::accumulate(batch.loss_info.data(), batch.loss_info.data() + batch.loss_info.size(),
                                      0.f, std::plus<float>());
       cumulative_val_loss += val_loss;
@@ -261,8 +298,8 @@ std::tuple<float, float> activity_classifier::compute_validation_metrics(
   }
   // Process all remaining batches.
   pop_until_size(0);
-
-  float average_val_accuracy = cumulative_val_accuracy / val_size;
+  float average_val_accuracy =
+      static_cast<float>(val_num_correct) / val_num_samples;
   float average_val_loss = cumulative_val_loss / val_size;
 
   return std::make_tuple(average_val_accuracy, average_val_loss);
@@ -286,21 +323,15 @@ void activity_classifier::init_table_printer(bool has_validation) {
   }
 }
 
-void activity_classifier::train(gl_sframe data, const std::string& target_column_name,
-                                const std::string& session_id_column_name,
-                                variant_type validation_data,
-                                const std::map<std::string, flexible_type>& opts)
+void activity_classifier::train(
+    gl_sframe data, std::string target_column_name,
+    std::string session_id_column_name, variant_type validation_data,
+    std::map<std::string, flexible_type> opts)
 {
-
-  gl_sframe train_data;
-  gl_sframe val_data;
-  std::tie(train_data, val_data) =
-      init_data(data, validation_data, session_id_column_name);
-
   // Instantiate the training dependencies: data iterator, compute context,
   // backend NN model.
-  init_train(std::move(train_data), target_column_name, session_id_column_name,
-             std::move(val_data), opts);
+  init_train(data, target_column_name, session_id_column_name, validation_data,
+             opts);
 
   // Perform all the iterations at once.
   flex_int max_iterations = read_state<flex_int>("max_iterations");
@@ -321,9 +352,9 @@ void activity_classifier::train(gl_sframe data, const std::string& target_column
 
   // Update the state with recall, precision and confusion matrix for training
   // data
-  gl_sarray train_predictions = predict(train_data, "probability_vector");
+  gl_sarray train_predictions = predict(training_data_, "probability_vector");
   variant_map_type train_metric = evaluation::compute_classifier_metrics(
-      train_data, target_column_name, "report", train_predictions,
+      training_data_, target_column_name, "report", train_predictions,
       {{"classes", read_state<flex_list>("classes")}});
 
   for (auto &p : train_metric) {
@@ -332,10 +363,10 @@ void activity_classifier::train(gl_sframe data, const std::string& target_column
 
   // Update the state with recall, precision and confusion matrix for validation
   // data
-  if (!val_data.empty()) {
-    gl_sarray val_predictions = predict(val_data, "probability_vector");
+  if (!validation_data_.empty()) {
+    gl_sarray val_predictions = predict(validation_data_, "probability_vector");
     variant_map_type val_metric = evaluation::compute_classifier_metrics(
-        val_data, target_column_name, "report", val_predictions,
+        validation_data_, target_column_name, "report", val_predictions,
         {{"classes", read_state<flex_list>("classes")}});
 
     for (auto &p : val_metric) {
@@ -344,9 +375,8 @@ void activity_classifier::train(gl_sframe data, const std::string& target_column
   }
 
   add_or_update_state(state_update);
+
 }
-
-
 
 gl_sarray activity_classifier::predict(gl_sframe data,
                                        std::string output_type) {
@@ -359,7 +389,8 @@ gl_sarray activity_classifier::predict(gl_sframe data,
 
   // Bind the data to a data iterator.
   std::unique_ptr<data_iterator> data_it =
-      create_iterator(data, /* requires_labels */ false, /* is_train */ false);
+      create_iterator(data, /* requires_labels */ false, /* is_train */ false,
+                      /* use_data_augmentation */ false);
 
   // Accumulate the class probabilities for each prediction window.
   gl_sframe raw_preds_per_window = perform_inference(data_it.get());
@@ -404,7 +435,8 @@ gl_sframe activity_classifier::predict_per_window(gl_sframe data,
 
   // Bind the data to a data iterator.
   std::unique_ptr<data_iterator> data_it =
-      create_iterator(data, /* requires_labels */ false, /* is_train */ false);
+      create_iterator(data, /* requires_labels */ false, /* is_train */ false,
+                      /* use_data_augmentation */ false);
 
   // Accumulate the class probabilities for each prediction window.
   gl_sframe raw_preds_per_window = perform_inference(data_it.get());
@@ -579,10 +611,9 @@ void activity_classifier::import_from_custom_model(
   nn_spec_->update_params(nn_params);
 }
 
-std::unique_ptr<data_iterator>
-activity_classifier::create_iterator(gl_sframe data, bool requires_labels,
-                                     bool is_train) const {
-
+std::unique_ptr<data_iterator> activity_classifier::create_iterator(
+    gl_sframe data, bool requires_labels, bool is_train,
+    bool use_data_augmentation) const {
   data_iterator::parameters data_params;
   data_params.data = std::move(data);
 
@@ -590,7 +621,7 @@ activity_classifier::create_iterator(gl_sframe data, bool requires_labels,
     data_params.class_labels = read_state<flex_list>("classes");
   }
 
-  data_params.verbose = is_train;
+  data_params.is_train = is_train;
   if (requires_labels) {
     data_params.target_column_name = read_state<flex_string>("target");
   }
@@ -600,6 +631,8 @@ activity_classifier::create_iterator(gl_sframe data, bool requires_labels,
       std::vector<std::string>(features.begin(), features.end());
   data_params.prediction_window = read_state<flex_int>("prediction_window");
   data_params.predictions_in_chunk = NUM_PREDICTIONS_PER_CHUNK;
+  data_params.use_data_augmentation = use_data_augmentation;
+  data_params.random_seed = read_state<int>("random_seed");
   return std::unique_ptr<data_iterator>(new simple_data_iterator(data_params));
 }
 
@@ -619,6 +652,10 @@ std::unique_ptr<model_spec> activity_classifier::init_model() const
   size_t prediction_window = read_state<flex_int>("prediction_window");
   const flex_list &features_list = read_state<flex_list>("features");
 
+  // Initialize a random number generator for weight initialization.
+  std::seed_seq seed_seq = { read_state<int>("random_seed") };
+  std::mt19937 random_engine(seed_seq);
+
   result->add_channel_concat(
       "features",
       std::vector<std::string>(features_list.begin(), features_list.end()));
@@ -636,7 +673,8 @@ std::unique_ptr<model_spec> activity_classifier::init_model() const
       /* padding */ padding_type::VALID,
       /* weight_init_fn */
       xavier_weight_initializer(num_features * prediction_window,
-                                NUM_CONV_FILTERS * prediction_window),
+                                NUM_CONV_FILTERS * prediction_window,
+                                &random_engine),
       /* bias_init_fn */ zero_weight_initializer());
   result->add_relu("relu1", "conv");
 
@@ -653,7 +691,7 @@ std::unique_ptr<model_spec> activity_classifier::init_model() const
       /* output_vector_size */  LSTM_HIDDEN_SIZE,
       /* cell_clip_threshold */ LSTM_CELL_CLIP_THRESHOLD,
       /* initializers */  lstm_weight_initializers::create_with_xavier_method(
-          NUM_CONV_FILTERS, LSTM_HIDDEN_SIZE));
+          NUM_CONV_FILTERS, LSTM_HIDDEN_SIZE, &random_engine));
   result->add_channel_concat("stateOut",{"hiddenOut","cellOut"});
   result->add_inner_product(
       /* name */ "dense0",
@@ -661,7 +699,8 @@ std::unique_ptr<model_spec> activity_classifier::init_model() const
       /* num_output_channels */ FULLY_CONNECTED_HIDDEN_SIZE,
       /* num_input_channels */ LSTM_HIDDEN_SIZE,
       /* weight_init_fn */
-      xavier_weight_initializer(LSTM_HIDDEN_SIZE, FULLY_CONNECTED_HIDDEN_SIZE),
+      xavier_weight_initializer(LSTM_HIDDEN_SIZE, FULLY_CONNECTED_HIDDEN_SIZE,
+                                &random_engine),
       /* bias_init_fn */ zero_weight_initializer());
   result->add_batchnorm("bn", "dense0", FULLY_CONNECTED_HIDDEN_SIZE, 0.001f);
   result->add_relu("relu6", "bn");
@@ -671,7 +710,7 @@ std::unique_ptr<model_spec> activity_classifier::init_model() const
       /* num_output_channels */ num_classes,
       /* num_input_channels */  FULLY_CONNECTED_HIDDEN_SIZE,
       /* weight_init_fn */      xavier_weight_initializer(
-          FULLY_CONNECTED_HIDDEN_SIZE, num_classes),
+          FULLY_CONNECTED_HIDDEN_SIZE, num_classes, &random_engine),
       /* bias_init_fn */        zero_weight_initializer());
   result->add_softmax(target + "Probability", "dense1");
 
@@ -694,16 +733,18 @@ activity_classifier::init_data(gl_sframe data, variant_type validation_data,
   }
   else if ((variant_is<flex_string>(validation_data)) && (variant_get_value<flex_string>(validation_data)=="auto")) {
     gl_sarray unique_session = data[session_id_column_name].unique();
+    size_t seed = read_state<size_t>("random_seed");
     if (unique_session.size() >= 200000) {
       // TODO: Expose seed parameter publicly.
       float p = 10000.0 / unique_session.size();
       std::tie(train_data, val_data) =
-          random_split_by_session(data, session_id_column_name, p, 1);
+          random_split_by_session(data, session_id_column_name, p, seed);
     } else if (unique_session.size() >= 200) {
-      std::tie(train_data, val_data) = random_split_by_session(data, session_id_column_name, 0.95, 1);
+      std::tie(train_data, val_data) =
+          random_split_by_session(data, session_id_column_name, 0.95, seed);
     } else if (unique_session.size() >= 50) {
       std::tie(train_data, val_data) =
-          random_split_by_session(data, session_id_column_name, 0.90, 1);
+          random_split_by_session(data, session_id_column_name, 0.90, seed);
     } else {
       train_data = data;
       std::cout << "The dataset has less than the minimum of 50 sessions required for train-validation split. "
@@ -717,13 +758,9 @@ activity_classifier::init_data(gl_sframe data, variant_type validation_data,
 
 void activity_classifier::init_train(
     gl_sframe data, std::string target_column_name,
-    std::string session_id_column_name, gl_sframe validation_data,
-    std::map<std::string, flexible_type> opts) {
-
-  // Begin printing progress.
-  // TODO: Make progress printing optional.
-  init_table_printer(!validation_data.empty());
-
+    std::string session_id_column_name, variant_type validation_data,
+    std::map<std::string, flexible_type> opts)
+{
   // Extract feature names from options.
   std::vector<std::string> feature_column_names;
   auto features_it = opts.find("features");
@@ -735,7 +772,24 @@ void activity_classifier::init_train(
     // Don't pass "features" to init_options, which doesn't recognize it.
     opts.erase(features_it);
   }
+
+  // Read user-specified options.
   init_options(opts);
+
+  // Choose a random seed if not set.
+  if (read_state<flexible_type>("random_seed") == FLEX_UNDEFINED) {
+    std::random_device random_device;
+    int random_seed = static_cast<int>(random_device());
+    add_or_update_state({{"random_seed", random_seed}});
+  }
+
+  // Perform validation split if necessary.
+  std::tie(training_data_, validation_data_) =
+      init_data(data, validation_data, session_id_column_name);
+
+  // Begin printing progress.
+  // TODO: Make progress printing optional.
+  init_table_printer(!validation_data_.empty());
 
   add_or_update_state({{"session_id", session_id_column_name},
                        {"target", target_column_name},
@@ -743,15 +797,18 @@ void activity_classifier::init_train(
                                               feature_column_names.end())}});
 
   // Bind the data to a data iterator.
+  bool use_data_augmentation = read_state<bool>("use_data_augmentation");
   training_data_iterator_ =
-      create_iterator(data, /* requires_labels */ true, /* is_train */ true);
+      create_iterator(training_data_, /* requires_labels */ true,
+                      /* is_train */ true, use_data_augmentation);
 
   add_or_update_state({{"classes", training_data_iterator_->class_labels()}});
 
   // Bind the validation data to a data iterator.
-  if (!validation_data.empty()) {
+  if (!validation_data_.empty()) {
     validation_data_iterator_ = create_iterator(
-        validation_data, /* requires_labels */ true, /* is_train */ false);
+        validation_data_, /* requires_labels */ true, /* is_train */ false,
+        /* use_data_augmentation */ false);
   } else {
     validation_data_iterator_ = nullptr;
   }
@@ -799,7 +856,8 @@ void activity_classifier::init_train(
       /* c_out */ read_state<flex_int>("num_classes"),
       /* h_out */ 1,
       /* w_out */ NUM_PREDICTIONS_PER_CHUNK,
-      get_training_config(read_state<flex_int>("prediction_window")),
+      get_training_config(read_state<flex_int>("prediction_window"),
+                          read_state<int>("random_seed")),
       nn_spec_->export_params_view());
 
   // Print the header last, after any logging triggered by initialization above.
@@ -818,8 +876,9 @@ void activity_classifier::perform_training_iteration() {
   const size_t iteration_idx = read_state<flex_int>("training_iterations");
 
   float cumulative_batch_loss = 0.f;
-  float cumulative_batch_accuracy = 0.f;
   size_t num_batches = 0;
+  size_t train_num_correct = 0;
+  size_t train_num_samples = 0;
   size_t num_classes = read_state<size_t>("num_classes");
   size_t prediction_window = read_state<size_t>("prediction_window");
 
@@ -835,8 +894,13 @@ void activity_classifier::perform_training_iteration() {
       result batch = pending_batches.front();
       pending_batches.pop();
 
-      cumulative_batch_accuracy += cumulative_chunk_accuracy(prediction_window, num_classes, batch.output_info,
-                                    batch.data_info ) / batch.data_info.batch_info.size();
+      size_t batch_num_correct = 0;
+      size_t batch_num_samples = 0;
+      std::tie(batch_num_correct, batch_num_samples) =
+          cumulative_chunk_accuracy(prediction_window, num_classes,
+                                    batch.output_info, batch.data_info);
+      train_num_correct += batch_num_correct;
+      train_num_samples += batch_num_samples;
 
       float batch_loss = std::accumulate(batch.loss_info.data(),
                                          batch.loss_info.data() + batch.loss_info.size(),
@@ -873,9 +937,9 @@ void activity_classifier::perform_training_iteration() {
   }
   // Process all remaining batches.
   pop_until_size(0);
-
   float average_batch_loss = cumulative_batch_loss / num_batches;
-  float average_batch_accuracy = cumulative_batch_accuracy / num_batches;
+  float average_batch_accuracy =
+      static_cast<float>(train_num_correct) / train_num_samples;
   float average_val_accuracy;
   float average_val_loss;
 

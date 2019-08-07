@@ -616,7 +616,7 @@ class SFrameTest(unittest.TestCase):
         glob_sf = SFrame.read_csv(os.path.join(csv_dir, "foo.*2.csv"))
         self.assertEqual(glob_sf.num_rows(), 100)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(IOError):
             SFrame.read_csv("missingdirectory")
 
         with self.assertRaises(ValueError):
@@ -1738,6 +1738,140 @@ class SFrameTest(unittest.TestCase):
         res = bad_departments.join(self.employees_sf, on='dep_id', how='left')
         self.__assert_join_results_equal(res, no_pk_expected)
 
+    def test_simple_joins_with_customized_name(self):
+        # redundant name conflict resolution
+        with self.assertRaises(KeyError):
+            self.employees_sf.join(self.departments_sf, alter_name={'non_existing_name': 'random_name'})
+
+        with self.assertRaises(KeyError):
+            self.employees_sf.join(self.departments_sf, alter_name={'dep_id': 'random_name'})
+
+        with self.assertRaises(ValueError):
+            self.employees_sf.join(self.departments_sf, alter_name={'dep_name': 'last_name'})
+
+        # nothing should happen
+        # Tests the "natural join" case
+        inner_expected = SFrame()
+        inner_expected.add_column(SArray(['Robinson','Jones','Smith','Heisenberg','Rafferty']), 'last_name', inplace=True)
+        inner_expected.add_column(SArray([34,33,34,33,31]), 'dep_id', inplace=True)
+        inner_expected.add_column(SArray(['Marketing','Engineering','Cooking','Clerical','Sales']), 'dep_name', inplace=True)
+
+        # add extra column for employee table
+        employees_sf_extra = self.employees_sf.add_column(SArray(
+            ['Sales', 'Engineering', 'Clerical', 'Marketing', 'Cooking', 'Basketball']), 'dep_name');
+
+        res = employees_sf_extra.join(self.departments_sf, on='dep_id')
+        inner_expected_tmp = inner_expected.add_column(SArray(['Clerical', 'Engineering', 'Clerical', 'Engineering', 'Sales']), 'dep_name.1')
+        self.__assert_join_results_equal(res, inner_expected_tmp)
+
+        inner_expected_tmp = inner_expected.add_column(SArray(['Clerical', 'Engineering', 'Clerical', 'Engineering', 'Sales']), 'X')
+        res = employees_sf_extra.join(self.departments_sf, on='dep_id', alter_name={'dep_name': 'X'})
+        self.__assert_join_results_equal(res, inner_expected_tmp)
+
+        ###### A simple and navive test start ######
+        employees_ = SFrame()
+        employees_.add_column(SArray(['A','B','C','D']), 'last_name', inplace=True)
+        employees_.add_column(SArray([31,32,33,None]), 'dep_id', inplace=True)
+        employees_.add_column(SArray([1,2,3,4]), 'org_id', inplace=True)
+        employees_.add_column(SArray([1,2,3,4]), 'bed_id', inplace=True)
+
+        departments_ = SFrame()
+        departments_.add_column(SArray([31,33,34]), 'dep_id', inplace=True)
+        departments_.add_column(SArray(['A','C','F']), 'last_name', inplace=True)
+        departments_.add_column(SArray(['Sales','Engineering', None]), 'dep_name', inplace=True)
+        # intentionally dup at the second last
+        departments_.add_column(SArray([1,3,5]), 'bed_id', inplace=True)
+        departments_.add_column(SArray([1,3,None]), 'car_id', inplace=True)
+
+        join_keys_ = ['dep_id', 'last_name']
+
+        ## left
+        expected_ = SFrame()
+        expected_.add_column(SArray(['A','B','C','D']), 'last_name', inplace=True)
+        expected_.add_column(SArray([31,32,33,None]), 'dep_id', inplace=True)
+        expected_.add_column(SArray([1,2,3,4]), 'org_id', inplace=True)
+        expected_.add_column(SArray([1,2,3,4]), 'bed_id', inplace=True)
+        expected_.add_column(SArray(['Sales', None, 'Engineering', None]), 'dep_name', inplace=True)
+        expected_.add_column(SArray([1,None,3,None]), 'bed_id.1', inplace=True)
+        expected_.add_column(SArray([1,None,3,None]), 'car_id', inplace=True)
+
+        res = employees_.join(departments_, on=join_keys_, how='left')
+        self.__assert_join_results_equal(res, expected_)
+
+        expected_ = SFrame()
+        expected_.add_column(SArray(['A','B','C','D']), 'last_name', inplace=True)
+        expected_.add_column(SArray([31,32,33,None]), 'dep_id', inplace=True)
+        expected_.add_column(SArray([1,2,3,4]), 'org_id', inplace=True)
+        expected_.add_column(SArray([1,2,3,4]), 'bed_id', inplace=True)
+        expected_.add_column(SArray(['Sales', None, 'Engineering', None]), 'dep_name', inplace=True)
+        expected_.add_column(SArray([1,None,3,None]), 'Y', inplace=True)
+        expected_.add_column(SArray([1,None,3,None]), 'car_id', inplace=True)
+
+        res = employees_.join(departments_, on=join_keys_, how='left', alter_name={'car_id': 'X', 'bed_id': 'Y'})
+        self.__assert_join_results_equal(res, expected_)
+
+        ## left size is smaller than right
+        expected_ = SFrame()
+        expected_.add_column(SArray([31,33,34]), 'dep_id', inplace=True)
+        expected_.add_column(SArray(['A','C','F']), 'last_name', inplace=True)
+        expected_.add_column(SArray(['Sales','Engineering', None]), 'dep_name', inplace=True)
+        expected_.add_column(SArray([1,3,5]), 'bed_id', inplace=True)
+        expected_.add_column(SArray([1,3,None]), 'car_id', inplace=True)
+        expected_.add_column(SArray([1,3,None]), 'org_id', inplace=True)
+        expected_.add_column(SArray([1,3,None]), 'Y', inplace=True)
+
+        res = departments_.join(employees_, on=join_keys_, how='left', alter_name={'bed_id': 'Y'})
+        self.__assert_join_results_equal(res, expected_)
+
+        ## right
+        expected_ = SFrame()
+        expected_.add_column(SArray(['A','C','F']), 'last_name', inplace=True)
+        expected_.add_column(SArray([31,33,34]), 'dep_id', inplace=True)
+        expected_.add_column(SArray([1,3,None]), 'org_id', inplace=True)
+        expected_.add_column(SArray([1,3,None]), 'bed_id', inplace=True)
+        expected_.add_column(SArray(['Sales','Engineering', None]), 'dep_name', inplace=True)
+        expected_.add_column(SArray([1,3,5]), 'Y', inplace=True)
+        expected_.add_column(SArray([1,3,None]), 'car_id', inplace=True)
+
+        res = employees_.join(departments_, on=join_keys_, how='right', alter_name={'car_id': 'X', 'bed_id': 'Y'})
+        self.__assert_join_results_equal(res, expected_)
+
+        ## outer
+        expected_ = SFrame()
+        expected_.add_column(SArray(['A','B','C','D','F']), 'last_name', inplace=True)
+        expected_.add_column(SArray([31,32,33,None,34]), 'dep_id', inplace=True)
+        expected_.add_column(SArray([1,2,3,4,None]), 'org_id', inplace=True)
+        expected_.add_column(SArray([1,2,3,4,None]), 'bed_id', inplace=True)
+        expected_.add_column(SArray(['Sales', None, 'Engineering', None, None]), 'dep_name', inplace=True)
+        expected_.add_column(SArray([1,None,3,None,5]), 'Y', inplace=True)
+        expected_.add_column(SArray([1,None,3,None,None]), 'car_id', inplace=True)
+
+        res = employees_.join(departments_, on=join_keys_, how='outer', alter_name={'car_id': 'X', 'bed_id': 'Y'})
+        self.__assert_join_results_equal(res, expected_)
+
+        ## error cases
+        with self.assertRaises(KeyError):
+            res = employees_.join(departments_, on=join_keys_, how='right', alter_name={
+                'some_id': 'car_id', 'bed_id': 'Y'})
+
+        with self.assertRaises(ValueError):
+            res = employees_.join(departments_, on=join_keys_, how='right', alter_name={
+            'car_id': 'car_id', 'bed_id': 'car_id'})
+
+        ## resolution order is not independent
+        with self.assertRaises(ValueError):
+            res = employees_.join(departments_, on=join_keys_, how='right', alter_name={
+                'car_id': 'X', 'bed_id': 'car_id'})
+
+        with self.assertRaises(ValueError):
+            res = employees_.join(departments_, on=join_keys_, how='right', alter_name={
+                'car_id': 'bed_id', 'bed_id': 'car_id'})
+
+        ## duplicate values
+        with self.assertRaises(RuntimeError):
+            res = employees_.join(departments_, on=join_keys_, how='right', alter_name={
+                'car_id': 'X', 'bed_id': 'X'})
+
     def test_big_composite_join(self):
         # Create a semi large SFrame with composite primary key (letter, number)
         letter_keys = []
@@ -1846,6 +1980,68 @@ class SFrameTest(unittest.TestCase):
         sf.add_column(SArray(self.int_data), "ints", inplace=True)
         sf.add_column(SArray(self.float_data), "floats", inplace=True)
         sf.add_column(SArray(self.string_data), "strings", inplace=True)
+
+        # filter by None should take no effect on data set without missing val
+        res = sf.filter_by(None, "ints", exclude=True)
+        self.__assert_join_results_equal(res, sf)
+        res = sf.filter_by(None, "floats", exclude=True)
+        self.__assert_join_results_equal(res, sf)
+        res = sf.filter_by(None, "strings", exclude=True)
+        self.__assert_join_results_equal(res, sf)
+
+        res = sf.filter_by(None, "ints")
+        self.assertEqual(len(res), 0)
+        res = sf.filter_by(None, "strings")
+        self.assertEqual(len(res), 0)
+
+        # private use only
+        def __build_data_list_with_none(data_lst):
+            data_lst.insert(len(data_lst) // 2, None)
+            data_lst.insert(0, None)
+            data_lst.append(None)
+            return data_lst
+
+        sf_none = SFrame()
+        sf_none.add_column(SArray(__build_data_list_with_none(self.int_data[:])), "ints", inplace=True)
+        sf_none.add_column(SArray(__build_data_list_with_none(self.float_data[:])), "floats", inplace=True)
+        sf_none.add_column(SArray(__build_data_list_with_none(self.string_data[:])), "strings", inplace=True)
+
+        res = sf_none.filter_by(None, "ints")
+        self.assertEqual(len(res), 3)
+        res = sf_none.filter_by(None, "ints", exclude=True)
+        self.__assert_join_results_equal(res, sf)
+
+        res = sf_none.filter_by(None, "floats")
+        self.assertEqual(len(res), 3)
+        res = sf_none.filter_by(None, "floats", exclude=True)
+        self.__assert_join_results_equal(res, sf)
+
+        res = sf_none.filter_by(None, "strings")
+        self.assertEqual(len(res), 3)
+        res = sf_none.filter_by(None, "strings", exclude=True)
+        self.__assert_join_results_equal(res, sf)
+
+        # by generator, filter, map, range
+        res = sf.filter_by(range(10), "ints")
+        self.assertEqual(len(res), 9)
+        self.assertEqual(res["ints"][0], 1)
+        res = sf.filter_by(range(10), "ints", exclude=True)
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res["ints"][0], 10)
+
+        res = sf.filter_by(map(lambda x : x - 5., self.float_data), "floats")
+        self.assertEqual(len(res), 5)
+        self.assertEqual(res["floats"][0], self.float_data[0])
+        res = sf.filter_by(map(lambda x : x - 5., self.float_data), "floats", exclude=True)
+        self.assertEqual(len(res), 5)
+        self.assertEqual(res["floats"][0], self.float_data[5])
+
+        res = sf.filter_by(filter(lambda x : len(x) > 1, self.string_data), "strings")
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res["strings"][0], self.string_data[-1])
+        res = sf.filter_by(filter(lambda x : len(x) > 1, self.string_data), "strings", exclude=True)
+        self.assertEqual(len(res), 9)
+        self.assertEqual(res["strings"][0], self.string_data[0])
 
         # Normal cases
         res = sf.filter_by(SArray(self.int_data), "ints")
@@ -2909,6 +3105,52 @@ class SFrameTest(unittest.TestCase):
         self.__test_equal(test_split[0], self.employees_sf[0:5].to_dataframe())
         self.__test_equal(test_split[1], self.employees_sf[5:6].to_dataframe())
 
+        # test recursively removing nan
+        test_sf = SFrame({'array':SArray([[1,1],[2,np.nan],[3,3],[4,4],[5,5],[6,np.nan],[7,7],[8, np.nan]], np.ndarray),
+                          'lists':SArray([[1], None, [], [4], [5, 5], [6, np.nan], [7], None], list),
+                          'dicts':SArray([{1:2},{2:3},{3:4},{},{5:None},{6:7},{7:[7,[7,np.nan]]},None], dict)})
+
+        # non-recursive dropna
+        self.__test_equal(test_sf.dropna(how='any'),
+                          test_sf[0:1].append(test_sf[2:7]).to_dataframe())
+        test_split = test_sf.dropna_split()
+        self.__test_equal(test_split[0], test_sf[0:1].append(test_sf[2:7]).to_dataframe())
+
+        self.__test_equal(test_sf.dropna(how='all'), test_sf.to_dataframe());
+        test_split = test_sf.dropna_split(how='all')
+        self.assertEqual(len(test_split[1]), 0)
+
+        # recursive dropna
+        self.__test_equal(test_sf.dropna(recursive=True),
+            pd.DataFrame({'array':[[1,1],[3,3],[4,4]],'lists':[[1],[],[4]],'dicts':[{1:2},{3:4},{}]}))
+        test_split = test_sf.dropna_split(recursive=True)
+        self.__test_equal(test_split[0], test_sf[0:1].append(test_sf[2:4]).to_dataframe())
+        # nan is not comparable, so we don't check the nan part
+        # self.__test_equal(test_split[1], test_sf[1:2].append(test_sf[4:8]).to_dataframe())
+
+        # the 'all' case
+        self.__test_equal(test_sf.dropna(how='all', recursive=True), test_sf[0:7].to_dataframe())
+        test_split = test_sf.dropna_split(how='all', recursive=True)
+        self.__test_equal(test_split[0], test_sf[0:7].to_dataframe())
+
+        # test 'split' cases
+        self.__test_equal(test_sf.dropna('array', recursive=True),
+                          test_sf[0:1].append(test_sf[2:5]).append(test_sf[6:7]).to_dataframe())
+        test_split = test_sf.dropna_split('array', recursive=True)
+        self.__test_equal(test_split[0],
+                          test_sf[0:1].append(test_sf[2:5]).append(test_sf[6:7]).to_dataframe())
+
+        self.__test_equal(test_sf.dropna('lists', recursive=True),
+                          test_sf[0:1].append(test_sf[2:5]).append(test_sf[6:7]).to_dataframe())
+        test_split = test_sf.dropna_split('lists', recursive=True)
+        self.__test_equal(test_split[0],
+                          test_sf[0:1].append(test_sf[2:5]).append(test_sf[6:7]).to_dataframe())
+
+        self.__test_equal(test_sf.dropna('dicts', recursive=True),
+                          test_sf[0:4].append(test_sf[5:6]).to_dataframe())
+        test_split = test_sf.dropna_split('dicts', recursive=True)
+        self.__test_equal(test_split[0],
+                          test_sf[0:4].append(test_sf[5:6]).to_dataframe())
 
         # create some other test sframe
         test_sf = SFrame({'ints':SArray([None,None,3,4,None], int),

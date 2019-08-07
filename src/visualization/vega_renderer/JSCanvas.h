@@ -17,6 +17,8 @@
 #ifndef Canvas_h
 #define Canvas_h
 
+#import "VegaHTMLElement.h"
+
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #import <JavaScriptCore/JavaScriptCore.h>
@@ -29,6 +31,8 @@
 @property NSString *fontWeight;
 @property NSString *fontVariant;
 @property NSString *lineHeight;
+
+- (instancetype)initWithString:(NSString*)font;
 @end
 
 @protocol VegaCGGradientInterface<JSExport>
@@ -62,7 +66,7 @@ JSExportAs(addColorStop,
 @protocol VegaCGContextInterface <JSExport>
 
 // properties
-@property id fillStyle;
+@property JSValue * fillStyle;
 @property double globalAlpha;
 @property NSString * lineCap;
 @property NSString * lineJoin;
@@ -75,7 +79,7 @@ JSExportAs(addColorStop,
 @property double lineDashOffset;
 
 // utilities
-- (VegaCGTextMetrics *)measureText:(NSString *)text;
+- (JSValue *)measureText:(NSString *)text;
 
 // save/restore context state
 - (void)save;
@@ -108,7 +112,7 @@ JSExportAs(clearRect,
 - (void)clip;
 - (void)closePath;
 JSExportAs(createLinearGradient,
-           - (VegaCGLinearGradient *)createLinearGradientWithX0:(double)x0
+           - (JSValue *)createLinearGradientWithX0:(double)x0
            y0:(double)y0
            x1:(double)x1
            y1:(double)y1
@@ -119,6 +123,12 @@ JSExportAs(fillText,
            x:(double)x
            y:(double)y
            );
+JSExportAs(fillRect,
+            - (void)fillRectWithX:(double)x
+            y:(double)y
+            width:(double)width
+            height:(double)height
+            );
 JSExportAs(lineTo,
            - (void)lineToX:(double)x
            y:(double)y
@@ -164,13 +174,11 @@ JSExportAs(translate,
 @property CGLayerRef layer;
 @property double width;
 @property double height;
-- (instancetype)initWithWidth:(double)width
-                       height:(double)height
-                      context:(CGContextRef)parentContext;
+- (instancetype)initWithContext:(CGContextRef)parentContext;
 - (void)dealloc;
 - (NSDictionary<NSAttributedStringKey, id> *)textAttributes;
 + (CGAffineTransform)flipYAxisWithHeight:(double)height;
-+ (CGColorRef)colorFromString:(NSString *)string;
++ (CGColorRef)newColorFromString:(NSString *)string;
 @end
 
 @protocol VegaCGCanvasInterface <JSExport>
@@ -179,14 +187,9 @@ JSExportAs(translate,
 @property double height;
 @end
 
-@interface VegaCGCanvas : NSObject<VegaCGCanvasInterface>
-
+@interface VegaCGCanvas : VegaHTMLElement<VegaCGCanvasInterface>
 @property VegaCGContext *context;
-
-- (instancetype)initWithWidth:(double)width
-                       height:(double)height
-                      context:(CGContextRef)parentContext;
-
+- (instancetype)initWithContext:(CGContextRef)parentContext;
 @end
 
 

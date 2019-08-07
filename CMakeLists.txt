@@ -193,6 +193,10 @@ if(APPLE)
     # CoreML MLCustomModel requires macOS 10.14 or higher
     set(HAS_MLCUSTOMMODEL TRUE)
   endif()
+
+  if(NOT TC_BASE_SDK_VERSION VERSION_LESS 10.15)
+    add_definitions(-DHAS_MACOS_10_15)
+  endif()
 endif()
 
 
@@ -355,13 +359,7 @@ if (CLANG)
     add_compile_options(-Qunused-arguments)
   endif()
   
-  # same goes for unknown warning group (for #pragma clang warning suppression)
-  # seems different clang distributions have quite different warning arguments
-  check_cxx_compiler_flag("-Wno-unknown-warning-option" __no_unknown_warning_option)
-  if(${__no_unknown_warning_option})
-    add_compile_options(-Wno-unknown-warning-option)
-  endif()
-  
+ 
   # clang on Linux with libstdc++ from GCC 4.8.1 gives errors about class vs. struct hash.
   # apparently it's defined as both in separate places in libstdc++
   # and GCC 4.8.1 doesn't care, but clang does.
@@ -384,6 +382,13 @@ else()
   set(WERROR_FLAGS "-Werror")
 endif()
 
+# same goes for unknown warning group (for #pragma clang or #pragma GCC warning suppression)
+# seems different clang distributions have quite different warning arguments
+check_cxx_compiler_flag("-Wno-unknown-warning-option" __no_unknown_warning_option)
+if(${__no_unknown_warning_option})
+  add_compile_options(-Wno-unknown-warning-option)
+endif()
+ 
 if (${TC_STACK_DISPLAY})
   set(DEBUG_INFO_FLAGS "-g3 -fno-omit-frame-pointer")
 else()

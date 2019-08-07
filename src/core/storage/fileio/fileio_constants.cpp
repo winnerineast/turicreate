@@ -97,7 +97,7 @@ static bool check_cache_file_hdfs_location(std::string val) {
 #ifdef TC_BUILD_IOS
     log_and_throw("hdfs:// URLs not supported.");
 #else
-    if (get_file_status(val) == file_status::DIRECTORY) {
+    if (get_file_status(val).first == file_status::DIRECTORY) {
       // test hdfs write permission by createing a test directory
       namespace fs = boost::filesystem;
       std::string host, port, hdfspath;
@@ -126,6 +126,7 @@ EXPORT size_t FILEIO_MAXIMUM_CACHE_CAPACITY = 2LL * 1024 * 1024 * 1024;
 EXPORT size_t FILEIO_READER_BUFFER_SIZE = 16 * 1024;
 EXPORT size_t FILEIO_WRITER_BUFFER_SIZE = 96 * 1024;
 EXPORT std::string S3_ENDPOINT;
+EXPORT std::string S3_REGION;
 // TODO: Where is the right place for this? Probably not here...
 EXPORT int64_t NUM_GPUS = -1;
 
@@ -134,6 +135,7 @@ REGISTER_GLOBAL(int64_t, FILEIO_MAXIMUM_CACHE_CAPACITY_PER_FILE, true)
 REGISTER_GLOBAL(int64_t, FILEIO_READER_BUFFER_SIZE, false);
 REGISTER_GLOBAL(int64_t, FILEIO_WRITER_BUFFER_SIZE, false);
 REGISTER_GLOBAL(std::string, S3_ENDPOINT, true);
+REGISTER_GLOBAL(std::string, S3_REGION, true);
 REGISTER_GLOBAL(int64_t, NUM_GPUS, true);
 
 

@@ -7,6 +7,7 @@
 #ifndef TURI_ACTIVITY_CLASSIFICATION_AC_DATA_ITERATOR_HPP_
 #define TURI_ACTIVITY_CLASSIFICATION_AC_DATA_ITERATOR_HPP_
 
+#include <random>
 #include <string>
 #include <vector>
 
@@ -61,8 +62,14 @@ public:
      */
     flex_list class_labels;
 
-    /**  Generates verbose output when set to true. */
-    bool verbose;
+    /**  Set to true, when the data is used for training. */
+    bool is_train = false;
+
+    /** Augments training data when set to true*/
+    bool use_data_augmentation = false;
+
+    /** Determines results of data augmentation if enabled. */
+    int random_seed = 0;
   };
 
   /** Defines the output of a data_iterator. */
@@ -79,7 +86,7 @@ public:
     };
 
     /**
-     * An array with shape: (requested_batch_size,
+     * An array with shape: (requested_batch_size, 
      * 1, prediction_window * predictions_in_chunk, num_feature_columns)
      *
      * Each row is a chunk of feature values from one session.
@@ -89,7 +96,8 @@ public:
     /**
      * An array with shape: (requested_batch_size, 1, predictions_in_chunk, 1)
      *
-     * Each row is the sequence of class label (indices) from one chunk.
+     * Each row is the sequence of class label (indices) from one chunk 
+     * (labels picked after majority voting).
      *
      * If no target was specified, then this value is default constructed.
      */
@@ -104,6 +112,15 @@ public:
      * If no target was specified, then this value is default constructed.
      */
     neural_net::shared_float_array weights;
+
+
+    /**
+     * An array with shape: (requested_batch_size, 
+     * 1, prediction_window * predictions_in_chunk, 1)
+     *
+     * Each row is the sequence of raw class labels (indices) for each individual sample.
+     */
+    neural_net::shared_float_array labels_per_row;
 
     /**
      * Metadata for each valid (non-padded) row in the batch.
@@ -179,6 +196,10 @@ private:
   gl_sframe_range range_iterator_;
   gl_sframe_range::iterator next_row_;
   gl_sframe_range::iterator end_of_rows_;
+  size_t sample_in_row_ = 0;
+  bool is_train_ = false;
+  bool use_data_augmentation_ = false;
+  std::default_random_engine random_engine_;
 };
 
 /**

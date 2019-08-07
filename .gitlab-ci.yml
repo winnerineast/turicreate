@@ -12,8 +12,8 @@ build_wheel_debug_linux_python27:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: build
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -30,8 +30,8 @@ build_wheel_linux_python27:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: build
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -48,8 +48,8 @@ build_wheel_linux_python35:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: build
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -66,8 +66,8 @@ build_wheel_linux_python36:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: build
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -168,8 +168,8 @@ test_cpp_linux:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -179,7 +179,7 @@ test_cpp_linux:
   script:
     - apk add bash
     - apk add python2
-    - python scripts/run_cpp_tests.py -j 2 --docker
+    - python2.7 scripts/run_cpp_tests.py -j 2 --docker
 
 test_cpp_mac_10_13:
   tags:
@@ -192,9 +192,9 @@ test_cpp_mac_10_13:
     - build_wheel_mac_10_14_python27
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-    - (test -d debug && test -d release) || ./configure
-    - cd release/test
-    - make -j8
+    - (test -d debug && test -d release) || ./configure --no-python
+    - cd debug/test
+    - bash -c "make -j8 2>&1 | grep -v -E '^ld[^a-z]*warning[^a-z]*direct access'"
     - export LD_LIBRARY_PATH=`pwd`/deps/local/lib:`pwd`/deps/local/lib64:$LD_LIBRARY_PATH
     - export PATH=`pwd`/deps/local/bin:$PATH
     - export LD_LIBRARY_PATH=`pwd`/src/unity:`pwd`/src/python/turicreate:$LD_LIBRARY_PATH
@@ -211,9 +211,9 @@ test_cpp_mac_10_14:
     - build_wheel_mac_10_14_python27
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-    - (test -d debug && test -d release) || ./configure
-    - cd release/test
-    - make -j8
+    - (test -d debug && test -d release) || ./configure --no-python
+    - cd debug/test
+    - bash -c "make -j8 2>&1 | grep -v -E '^ld[^a-z]*warning[^a-z]*direct access'"
     - export LD_LIBRARY_PATH=`pwd`/deps/local/lib:`pwd`/deps/local/lib64:$LD_LIBRARY_PATH
     - export PATH=`pwd`/deps/local/bin:$PATH
     - export LD_LIBRARY_PATH=`pwd`/src/unity:`pwd`/src/python/turicreate:$LD_LIBRARY_PATH
@@ -223,8 +223,8 @@ test_python_linux_python27:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -244,8 +244,8 @@ test_python_linux_python35:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -265,8 +265,8 @@ test_python_linux_python36:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -359,8 +359,8 @@ scenario_tests_linux_python27:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -376,8 +376,8 @@ scenario_tests_linux_python35:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -393,8 +393,8 @@ scenario_tests_linux_python36:
   tags:
     - docker
   services:
-    - docker:dind
-  image: docker:stable
+    - docker:18.09-dind
+  image: docker:18.09
   stage: test
   variables:
     DOCKER_HOST: tcp://docker:2375/
@@ -438,7 +438,7 @@ collect_artifacts:
   tags:
     - docker
   services:
-    - docker:dind
+    - docker:18.09-dind
   image: alpine:latest
   stage: collect_artifacts
   dependencies:

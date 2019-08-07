@@ -92,6 +92,10 @@ class DrawingClassifierTest(unittest.TestCase):
         self.trains = [self.check_cross_sf, self.stroke_sf]
         self.models = [self.check_cross_model, self.stroke_model]
 
+    def test_create_with_missing_value_bitmap(self):
+        sf = self.check_cross_sf.append(_tc.SFrame({self.feature: _tc.SArray([None], dtype=_tc.Image), self.target: ["check"]}))
+        with self.assertRaises(_ToolkitError):
+            _tc.drawing_classifier.create(sf, self.target)
 
     def test_create_with_missing_feature(self):
         for sf in self.trains:
@@ -220,7 +224,6 @@ class DrawingClassifierTest(unittest.TestCase):
                 preds = model.predict(sf[self.feature], output_type="probability")
                 assert (preds.dtype == float)
 
-
     def test_evaluate_without_ground_truth(self):
         for index in range(len(self.trains)):
             model = self.models[index]
@@ -229,9 +232,7 @@ class DrawingClassifierTest(unittest.TestCase):
             with self.assertRaises(_ToolkitError):
                 model.evaluate(sf_without_ground_truth)
 
-    @pytest.mark.xfail(reason='Fails, see https://github.com/apple/turicreate/issues/1973')
     def test_evaluate_with_ground_truth(self):
-
         all_metrics = ["accuracy", "auc", "precision", "recall",
                        "f1_score", "log_loss", "confusion_matrix", "roc_curve"]
         for index in range(len(self.models)):

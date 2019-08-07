@@ -13,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <queue>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -21,7 +22,32 @@
 #include <core/random/random.hpp>
 #include <toolkits/coreml_export/neural_net_models_exporter.hpp>
 #include <toolkits/object_detection/od_evaluation.hpp>
+#include <toolkits/object_detection/od_serialization.hpp>
 #include <toolkits/object_detection/od_yolo.hpp>
+#include <toolkits/supervised_learning/automatic_model_creation.hpp>
+
+#ifdef __APPLE__
+
+#include <os/log.h>
+
+static const os_log_t& _get_os_log_object() {
+  static_assert(std::is_trivially_destructible<os_log_t>::value,
+                "static variables should never de-initialize");
+  static os_log_t log_object = os_log_create("com.apple.turi",
+                                             "object_detector");
+  return log_object;
+}
+
+#define _os_log_integer(key, value)                                            \
+    os_log_info(_get_os_log_object(),                                          \
+                "event: %lu, key: %s, value: %ld",                             \
+                1ul, (key), static_cast<long>(value))
+
+#else  // #ifdef __APPLE__
+
+#define _os_log_integer(...)
+
+#endif  // #ifdef __APPLE__
 
 using turi::coreml::MLModelWrapper;
 using turi::neural_net::compute_context;
@@ -51,10 +77,6 @@ constexpr size_t MEMORY_REQUIRED_FOR_DEFAULT_BATCH_SIZE = 4294967296;
 
 // We assume RGB input.
 constexpr int NUM_INPUT_CHANNELS = 3;
-
-// Annotated and predicted bounding boxes are defined relative to a
-// GRID_SIZE x GRID_SIZE grid laid over the image.
-constexpr int GRID_SIZE = 13;
 
 // The spatial reduction depends on the input size of the pre-trained model
 // (relative to the grid size).
@@ -129,13 +151,15 @@ float_array_map get_prediction_config() {
   return config;
 }
 
-image_augmenter::options get_augmentation_options(flex_int batch_size) {
+image_augmenter::options get_augmentation_options(flex_int batch_size,
+                                                  flex_int grid_height,
+                                                  flex_int grid_width) {
   image_augmenter::options opts;
 
   // Specify the fixed image size expected by the neural network.
   opts.batch_size = static_cast<size_t>(batch_size);
-  opts.output_width = GRID_SIZE * SPATIAL_REDUCTION;
-  opts.output_height = GRID_SIZE * SPATIAL_REDUCTION;
+  opts.output_height = static_cast<size_t>(grid_height * SPATIAL_REDUCTION);
+  opts.output_width = static_cast<size_t>(grid_width * SPATIAL_REDUCTION);
 
   // Apply random crops.
   opts.crop_prob = 0.9f;
@@ -187,10 +211,6 @@ flex_int estimate_max_iterations(flex_int num_instances, flex_int batch_size) {
 void object_detector::init_options(
     const std::map<std::string, flexible_type>& opts) {
 
-  // The default values for some options request automatic configuration from
-  // the training data.
-  ASSERT_TRUE(training_data_iterator_ != nullptr);
-
   // Define options.
   options.create_integer_option(
       "batch_size",
@@ -204,10 +224,56 @@ void object_detector::init_options(
       FLEX_UNDEFINED,
       1,
       std::numeric_limits<int>::max());
+  options.create_integer_option(
+      /* name             */ "grid_height",
+      /* description      */
+      "Height of the grid of features computed for each image",
+      /* default_value    */ 13,
+      /* lower_bound      */ 1,
+      /* upper_bound      */ std::numeric_limits<int>::max());
+  options.create_integer_option(
+      /* name             */ "grid_width",
+      /* description      */
+      "Width of the grid of features computed for each image",
+      /* default_value    */ 13,
+      /* lower_bound      */ 1,
+      /* upper_bound      */ std::numeric_limits<int>::max());
+  options.create_integer_option(
+      "random_seed",
+      "Seed for random weight initialization and sampling during training",
+      FLEX_UNDEFINED,
+      std::numeric_limits<int>::min(),
+      std::numeric_limits<int>::max());
+  options.create_categorical_option(
+      /* name              */ "annotation_scale",
+      /* description       */
+      "Defines annotations scale: pixel or normalized",
+      /* default_value     */ "pixel",
+      /* allowed_values    */ {flexible_type("pixel"), flexible_type("normalized")},
+      /* allowed_overwrite */ false);
+  options.create_categorical_option(
+      /* name              */ "annotation_origin",
+      /* description       */
+      "Defines image origin: top_left or bottom_left",
+      /* default_value     */ "top_left",
+      /* allowed_values    */ {flexible_type("top_left"), flexible_type("bottom_left")},
+      /* allowed_overwrite */ false);
+  options.create_categorical_option(
+      /* name              */ "annotation_position",
+      /* description       */
+      "Defines annotations position: center, top_left or bottom_left",
+      /* default_value     */ "center",
+      /* allowed_values    */ {flexible_type("center"), flexible_type("top_left"), flexible_type("bottom_left")},
+      /* allowed_overwrite */ false);
 
   // Validate user-provided options.
   options.set_options(opts);
 
+  // Write model fields.
+  add_or_update_state(flexmap_to_varmap(options.current_option_values()));
+}
+
+void object_detector::infer_derived_options() {
   // Report to the user what GPU(s) is being used.
   std::vector<std::string> gpu_names = training_compute_context_->gpu_names();
   if (gpu_names.empty()) {
@@ -224,7 +290,7 @@ void object_detector::init_options(
   }
 
   // Configure the batch size automatically if not set.
-  if (options.value("batch_size") == FLEX_UNDEFINED) {
+  if (read_state<flexible_type>("batch_size") == FLEX_UNDEFINED) {
 
     flex_int batch_size = DEFAULT_BATCH_SIZE;
     size_t memory_budget = training_compute_context_->memory_budget();
@@ -236,38 +302,42 @@ void object_detector::init_options(
 
     logprogress_stream << "Setting 'batch_size' to " << batch_size;
 
-    options.set_option("batch_size", batch_size);
+    add_or_update_state({{"batch_size", batch_size}});
   }
+  _os_log_integer("batch_size", read_state<flex_int>("batch_size"));
 
   // Configure targeted number of iterations automatically if not set.
-  if (options.value("max_iterations") == FLEX_UNDEFINED) {
+  if (read_state<flexible_type>("max_iterations") == FLEX_UNDEFINED) {
     flex_int max_iterations = estimate_max_iterations(
         static_cast<flex_int>(training_data_iterator_->num_instances()),
-        options.value("batch_size"));
+        read_state<flex_int>("batch_size"));
 
     logprogress_stream << "Setting 'max_iterations' to " << max_iterations;
 
-    options.set_option("max_iterations", max_iterations);
+    add_or_update_state({{"max_iterations", max_iterations}});
   }
-
-  // Write model fields.
-  add_or_update_state(flexmap_to_varmap(options.current_option_values()));
+  _os_log_integer("max_iterations", read_state<flex_int>("max_iterations"));
 }
 
 size_t object_detector::get_version() const {
   return OBJECT_DETECTOR_VERSION;
 }
 
-void object_detector::save_impl(oarchive& oarc) const {}
+void object_detector::save_impl(oarchive& oarc) const {
+  _save_impl(oarc, *nn_spec_, state);
+}
 
-void object_detector::load_version(iarchive& iarc, size_t version) {}
+void object_detector::load_version(iarchive& iarc, size_t version) {
+  nn_spec_.reset(new model_spec);
+  _load_version(iarc, version, *nn_spec_, state, anchor_boxes());
+}
 
 void object_detector::train(gl_sframe data,
                             std::string annotations_column_name,
                             std::string image_column_name,
                             variant_type validation_data,
-                            std::map<std::string, flexible_type> opts) {
-
+                            std::map<std::string, flexible_type> opts)
+{
   // Begin printing progress.
   // TODO: Make progress printing optional.
   training_table_printer_.reset(new table_printer(
@@ -275,8 +345,8 @@ void object_detector::train(gl_sframe data,
 
   // Instantiate the training dependencies: data iterator, image augmenter,
   // backend NN model.
-  init_train(std::move(data), std::move(annotations_column_name),
-             std::move(image_column_name), std::move(opts));
+  init_train(data, annotations_column_name, image_column_name, validation_data,
+             opts);
 
   // Perform all the iterations at once.
   while (get_training_iterations() < get_max_iterations()) {
@@ -305,11 +375,7 @@ void object_detector::train(gl_sframe data,
   nn_spec_->update_params(trained_weights);
 
   // Compute training and validation metrics.
-  gl_sframe val_data;
-  if (variant_is<gl_sframe>(validation_data)) {
-    val_data = variant_get_value<gl_sframe>(validation_data);
-  }
-  update_model_metrics(data, val_data);
+  update_model_metrics(training_data_, validation_data_);
 }
 
 variant_map_type object_detector::evaluate(
@@ -346,7 +412,9 @@ variant_map_type object_detector::perform_evaluation(gl_sframe data,
   std::string image_column_name = read_state<flex_string>("feature");
   std::string annotations_column_name = read_state<flex_string>("annotations");
   flex_list class_labels = read_state<flex_list>("classes");
-  size_t batch_size = static_cast<size_t>(options.value("batch_size"));
+  size_t batch_size = read_state<size_t>("batch_size");
+  size_t grid_height = read_state<size_t>("grid_height");
+  size_t grid_width = read_state<size_t>("grid_width");
   float iou_threshold =
       read_state<flex_float>("non_maximum_suppression_threshold");
 
@@ -365,8 +433,8 @@ variant_map_type object_detector::perform_evaluation(gl_sframe data,
   // augmentations, just resize the input images to the desired shape.
   image_augmenter::options augmenter_opts;
   augmenter_opts.batch_size = batch_size;
-  augmenter_opts.output_width = GRID_SIZE * SPATIAL_REDUCTION;
-  augmenter_opts.output_height = GRID_SIZE * SPATIAL_REDUCTION;
+  augmenter_opts.output_height = grid_height * SPATIAL_REDUCTION;
+  augmenter_opts.output_width = grid_width * SPATIAL_REDUCTION;
   std::unique_ptr<image_augmenter> augmenter =
       ctx->create_image_augmenter(augmenter_opts);
 
@@ -375,15 +443,15 @@ variant_map_type object_detector::perform_evaluation(gl_sframe data,
   int num_outputs_per_anchor = 5 + static_cast<int>(class_labels.size());
   int num_output_channels = num_outputs_per_anchor * anchor_boxes().size();
   std::unique_ptr<model_backend> model = ctx->create_object_detector(
-      /* n */     options.value("batch_size"),
-      /* c_in */  NUM_INPUT_CHANNELS,
-      /* h_in */  GRID_SIZE * SPATIAL_REDUCTION,
-      /* w_in */  GRID_SIZE * SPATIAL_REDUCTION,
-      /* c_out */ num_output_channels,
-      /* h_out */ GRID_SIZE,
-      /* w_out */ GRID_SIZE,
-      get_prediction_config(),
-      get_model_params());
+      /* n       */ read_state<int>("batch_size"),
+      /* c_in    */ NUM_INPUT_CHANNELS,
+      /* h_in    */ grid_height * SPATIAL_REDUCTION,
+      /* w_in    */ grid_width * SPATIAL_REDUCTION,
+      /* c_out   */ num_output_channels,
+      /* h_out   */ grid_height,
+      /* w_out   */ grid_width,
+      /* config  */ get_prediction_config(),
+      /* weights */ get_model_params());
 
   // Initialize the metric calculator
   average_precision_calculator calculator(class_labels);
@@ -495,10 +563,14 @@ std::unique_ptr<model_spec> object_detector::init_model(
                   + pretrained_mlmodel_path);
   }
 
+  // Initialize a random number generator for weight initialization.
+  std::seed_seq seed_seq = { read_state<int>("random_seed") };
+  std::mt19937 random_engine(seed_seq);
+
   // Append conv7, initialized using the Xavier method (with base magnitude 3).
   // The conv7 weights have shape [1024, 1024, 3, 3], so fan in and fan out are
   // both 1024*3*3.
-  xavier_weight_initializer conv7_init_fn(1024*3*3, 1024*3*3);
+  xavier_weight_initializer conv7_init_fn(1024*3*3, 1024*3*3, &random_engine);
   nn_spec->add_convolution(/* name */                "conv7_fwd",
                            /* input */               "leakyrelu6_fwd",
                            /* num_output_channels */ 1024,
@@ -526,9 +598,11 @@ std::unique_ptr<model_spec> object_detector::init_model(
   const size_t num_classes = training_data_iterator_->class_labels().size();
   const size_t num_predictions = 5 + num_classes;  // Per anchor box
   const size_t conv8_c_out = anchor_boxes().size() * num_predictions;
-  auto conv8_weight_init_fn = [](float* w, float* w_end) {
+  auto conv8_weight_init_fn = [&random_engine](float* w, float* w_end) {
+    std::uniform_real_distribution<float> dist(-CONV8_MAGNITUDE,
+                                               CONV8_MAGNITUDE);
     while (w != w_end) {
-      *w++ = random::fast_uniform(-CONV8_MAGNITUDE, CONV8_MAGNITUDE);
+      *w++ = dist(random_engine);
     }
   };
   auto conv8_bias_init_fn = [num_predictions](float* w, float* w_end) {
@@ -562,6 +636,9 @@ std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
   // Initialize the result with the learned layers from the model_backend.
   model_spec yolo_nn_spec(nn_spec_->get_coreml_spec());
 
+  size_t grid_height = read_state<size_t>("grid_height");
+  size_t grid_width = read_state<size_t>("grid_width");
+
   std::string coordinates_str = "coordinates";
   std::string confidence_str = "confidence";
 
@@ -584,8 +661,8 @@ std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
 
   // Add the layers that convert to intelligible predictions.
   add_yolo(&yolo_nn_spec, coordinates_str, confidence_str, "conv8_fwd",
-           anchor_boxes(), read_state<flex_int>("num_classes"),
-           GRID_SIZE, GRID_SIZE);
+           anchor_boxes(), read_state<flex_int>("num_classes"), grid_height,
+           grid_width);
 
   // Compute the string representation of the list of class labels.
   flex_string class_labels_str;
@@ -619,14 +696,12 @@ std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
   // TODO: Should we also be adding the non-user-defined keys, such as
   // "version" and "shortDescription", or is that up to the frontend?
 
-  std::shared_ptr<MLModelWrapper> model_wrapper =
-      export_object_detector_model(yolo_nn_spec,
-                                   GRID_SIZE * SPATIAL_REDUCTION,
-                                   GRID_SIZE * SPATIAL_REDUCTION,
-                                   class_labels.size(),
-                                   GRID_SIZE*GRID_SIZE * anchor_boxes().size(),
-                                   std::move(user_defined_metadata), std::move(class_labels),
-                                   std::move(opts));
+  std::shared_ptr<MLModelWrapper> model_wrapper = export_object_detector_model(
+      yolo_nn_spec, grid_width * SPATIAL_REDUCTION,
+      grid_height * SPATIAL_REDUCTION, class_labels.size(),
+      grid_height * grid_width * anchor_boxes().size(),
+      std::move(user_defined_metadata), std::move(class_labels),
+      std::move(opts));
 
   if (!filename.empty()) {
     model_wrapper->save(filename);
@@ -646,8 +721,45 @@ std::unique_ptr<data_iterator> object_detector::create_iterator(
   iterator_params.class_labels = std::move(class_labels);
   iterator_params.repeat = repeat;
 
-  return std::unique_ptr<data_iterator>(
-      new simple_data_iterator(iterator_params));
+  std::string annotation_origin = read_state<flex_string>("annotation_origin");
+  std::string annotation_scale = read_state<flex_string>("annotation_scale");
+  std::string annotation_position = read_state<flex_string>("annotation_position");
+
+  // Setting input for Image Origin
+  if (annotation_origin == "top_left") {
+      iterator_params.annotation_origin = data_iterator::annotation_origin_enum::TOP_LEFT;
+  }
+  else if (annotation_origin == "bottom_left") {
+      iterator_params.annotation_origin = data_iterator::annotation_origin_enum::BOTTOM_LEFT;
+  }
+
+  // Setting input for Annotation Scale
+  if (annotation_scale == "pixel") {
+      iterator_params.annotation_scale = data_iterator::annotation_scale_enum::PIXEL;
+  }
+  else if (annotation_scale == "normalized") {
+      iterator_params.annotation_scale = data_iterator::annotation_scale_enum::NORMALIZED;
+  }
+
+  // Setting input for Annotation Position
+  if (annotation_position == "center") {
+      iterator_params.annotation_position = data_iterator::annotation_position_enum::CENTER;
+  }
+  else if (annotation_position == "top_left") {
+      iterator_params.annotation_position = data_iterator::annotation_position_enum::TOP_LEFT;
+  }
+  else if (annotation_position == "bottom_left") {
+      iterator_params.annotation_position = data_iterator::annotation_position_enum::BOTTOM_LEFT;
+  }
+
+  return create_iterator(iterator_params);
+}
+
+std::unique_ptr<data_iterator> object_detector::create_iterator(
+    data_iterator::parameters iterator_params) const
+{
+    return std::unique_ptr<data_iterator>(
+        new simple_data_iterator(iterator_params));
 }
 
 std::unique_ptr<compute_context> object_detector::create_compute_context() const
@@ -655,34 +767,11 @@ std::unique_ptr<compute_context> object_detector::create_compute_context() const
   return compute_context::create();
 }
 
-void object_detector::init_train(gl_sframe data,
-                                 std::string annotations_column_name,
-                                 std::string image_column_name,
-                                 std::map<std::string, flexible_type> opts) {
-  // Record the relevant column names upfront, for use in create_iterator. Also
-  // values fixed by this version of the toolkit.
-  std::array<flex_int, 3> input_image_shape =  // Using CoreML CHW format.
-      {{3, GRID_SIZE * SPATIAL_REDUCTION, GRID_SIZE * SPATIAL_REDUCTION}};
-  add_or_update_state({
-      { "annotations", annotations_column_name },
-      { "feature", image_column_name },
-      { "input_image_shape", flex_list(input_image_shape.begin(),
-                                       input_image_shape.end()) },
-      { "model", "darknet-yolo" },
-      { "non_maximum_suppression_threshold",
-        DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD },
-  });
-
-  // Bind the data to a data iterator.
-  training_data_iterator_ = create_iterator(
-      data, /* expected class_labels */ {}, /* repeat */ true);
-
-  // Instantiate the compute context.
-  training_compute_context_ = create_compute_context();
-  if (training_compute_context_ == nullptr) {
-    log_and_throw("No neural network compute context provided");
-  }
-
+void object_detector::init_train(
+    gl_sframe data, std::string annotations_column_name,
+    std::string image_column_name, variant_type validation_data,
+    std::map<std::string, flexible_type> opts)
+{
   // Extract 'mlmodel_path' from the options, to avoid storing it as a model
   // field.
   auto mlmodel_path_iter = opts.find("mlmodel_path");
@@ -692,45 +781,89 @@ void object_detector::init_train(gl_sframe data,
   const std::string mlmodel_path = mlmodel_path_iter->second;
   opts.erase(mlmodel_path_iter);
 
-  // Load the pre-trained model from the provided path.
-  nn_spec_ = init_model(mlmodel_path);
-
-  // Validate options, and infer values for unspecified options. Note that this
-  // depends on training data statistics in the general case.
+  // Read options from user.
   init_options(opts);
 
+  // Choose a random seed if not set.
+  if (read_state<flexible_type>("random_seed") == FLEX_UNDEFINED) {
+    std::random_device random_device;
+    int random_seed = static_cast<int>(random_device());
+    add_or_update_state({{"random_seed", random_seed}});
+  }
+
+  // Perform random validation split if necessary.
+  std::tie(training_data_, validation_data_) =
+      supervised::create_validation_data(data, validation_data,
+                                         read_state<int>("random_seed"));
+
+  // Record the relevant column names upfront, for use in create_iterator. Also
+  // values fixed by this version of the toolkit.
+  add_or_update_state({
+      { "annotations", annotations_column_name },
+      { "feature", image_column_name },
+      { "model", "darknet-yolo" },
+      { "non_maximum_suppression_threshold",
+        DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD },
+  });
+
+  // Bind the data to a data iterator.
+  training_data_iterator_ = create_iterator(
+      training_data_, /* expected class_labels */ {}, /* repeat */ true);
+
+  // Instantiate the compute context.
+  training_compute_context_ = create_compute_context();
+  if (training_compute_context_ == nullptr) {
+    log_and_throw("No neural network compute context provided");
+  }
+
+  // Infer values for unspecified options. Note that this depends on training
+  // data statistics and the compute context, initialized above.
+  infer_derived_options();
+
+  // Load the pre-trained model from the provided path. The final layers are
+  // initialized randomly using the random seed above, using the number of
+  // classes observed by the training_data_iterator_ above.
+  nn_spec_ = init_model(mlmodel_path);
+
   // Set additional model fields.
+  flex_int grid_height = read_state<flex_int>("grid_height");
+  flex_int grid_width = read_state<flex_int>("grid_width");
+  std::array<flex_int, 3> input_image_shape =  // Using CoreML CHW format.
+      {{3, grid_height * SPATIAL_REDUCTION, grid_width * SPATIAL_REDUCTION}};
   const std::vector<std::string>& classes =
       training_data_iterator_->class_labels();
   add_or_update_state({
-      { "classes", flex_list(classes.begin(), classes.end()) },
-      { "num_bounding_boxes", training_data_iterator_->num_instances() },
-      { "num_classes", training_data_iterator_->class_labels().size() },
-      { "num_examples", data.size() },
-      { "training_epochs", 0 },
-      { "training_iterations", 0 },
+      {"classes", flex_list(classes.begin(), classes.end())},
+      {"input_image_shape",
+       flex_list(input_image_shape.begin(), input_image_shape.end())},
+      {"num_bounding_boxes", training_data_iterator_->num_instances()},
+      {"num_classes", training_data_iterator_->class_labels().size()},
+      {"num_examples", data.size()},
+      {"training_epochs", 0},
+      {"training_iterations", 0},
   });
   // TODO: The original Python implementation also exposed "anchors",
   // "non_maximum_suppression_threshold", and "training_time".
 
   // Instantiate the data augmenter.
   training_data_augmenter_ = training_compute_context_->create_image_augmenter(
-      get_augmentation_options(options.value("batch_size")));
+      get_augmentation_options(read_state<flex_int>("batch_size"), grid_height,
+                               grid_width));
 
   // Instantiate the NN backend.
   int num_outputs_per_anchor =  // 4 bbox coords + 1 conf + one-hot class labels
       5 + static_cast<int>(training_data_iterator_->class_labels().size());
   int num_output_channels = num_outputs_per_anchor * anchor_boxes().size();
   training_model_ = training_compute_context_->create_object_detector(
-      /* n */     options.value("batch_size"),
-      /* c_in */  NUM_INPUT_CHANNELS,
-      /* h_in */  GRID_SIZE * SPATIAL_REDUCTION,
-      /* w_in */  GRID_SIZE * SPATIAL_REDUCTION,
-      /* c_out */ num_output_channels,
-      /* h_out */ GRID_SIZE,
-      /* w_out */ GRID_SIZE,
-      get_training_config(),
-      get_model_params());
+      /* n       */ read_state<int>("batch_size"),
+      /* c_in    */ NUM_INPUT_CHANNELS,
+      /* h_in    */ grid_height * SPATIAL_REDUCTION,
+      /* w_in    */ grid_width * SPATIAL_REDUCTION,
+      /* c_out   */ num_output_channels,
+      /* h_out   */ grid_height,
+      /* w_out   */ grid_width,
+      /* config  */ get_training_config(),
+      /* weights */ get_model_params());
 
   // Print the header last, after any logging triggered by initialization above.
   if (training_table_printer_) {
@@ -825,10 +958,12 @@ shared_float_array object_detector::prepare_label_batch(
     std::vector<std::vector<image_annotation>> annotations_batch) const {
 
   // Allocate a float buffer of sufficient size.
-  size_t batch_size = static_cast<size_t>(options.value("batch_size"));
+  size_t batch_size = read_state<size_t>("batch_size");
+  size_t grid_height = read_state<size_t>("grid_height");
+  size_t grid_width = read_state<size_t>("grid_width");
   size_t num_classes = training_data_iterator_->class_labels().size();
   size_t num_channels = anchor_boxes().size() * (5 + num_classes);  // C
-  size_t batch_stride = GRID_SIZE * GRID_SIZE * num_channels;  // H * W * C
+  size_t batch_stride = grid_height * grid_width * num_channels;    // H * W * C
   std::vector<float> result(batch_size * batch_stride);  // NHWC
 
   // Write the structured annotations into the float buffer.
@@ -837,8 +972,7 @@ shared_float_array object_detector::prepare_label_batch(
     annotations_batch.resize(batch_size);
   }
   for (const std::vector<image_annotation>& annotations : annotations_batch) {
-
-    convert_annotations_to_yolo(annotations, GRID_SIZE, GRID_SIZE,
+    convert_annotations_to_yolo(annotations, grid_height, grid_width,
                                 anchor_boxes().size(), num_classes, result_out);
 
     result_out += batch_stride;
@@ -847,7 +981,7 @@ shared_float_array object_detector::prepare_label_batch(
   // Wrap the resulting buffer and return it.
   return shared_float_array::wrap(
       std::move(result),
-      { annotations_batch.size(), GRID_SIZE, GRID_SIZE, num_channels });
+      {annotations_batch.size(), grid_height, grid_width, num_channels});
 }
 
 flex_int object_detector::get_max_iterations() const {
