@@ -42,8 +42,7 @@ def preview_synthetic_training_data(data,
     out : SFrame
         An SFrame of sythetically generated annotated training data.
     """
-
-    dataset_to_augment, image_column_name, target_column_name = check_one_shot_input(data, target)
+    dataset_to_augment, image_column_name, target_column_name = check_one_shot_input(data, target, backgrounds)
     _tkutl._handle_missing_values(dataset_to_augment, image_column_name, 'dataset')
     one_shot_model = _extensions.one_shot_object_detector()
     seed = kwargs["seed"] if "seed" in kwargs else _random.randint(0, 2**32 - 1)
@@ -53,6 +52,15 @@ def preview_synthetic_training_data(data,
         backgrounds_tar = _tarfile.open(backgrounds_tar_path)
         backgrounds_tar.extractall()
         backgrounds = _tc.SArray("one_shot_backgrounds.sarray")
+        # We resize the background dimensions by half along each axis to reduce
+        # the disk footprint during augmentation, and also reduce the time
+        # taken to synthesize data. 
+        backgrounds = backgrounds.apply(lambda im: _tc.image_analysis.resize(
+            im,
+            int(im.width/2),
+            int(im.height/2),
+            im.channels
+            ))
     # Option arguments to pass in to C++ Object Detector, if we use it:
     # {'mlmodel_path':'darknet.mlmodel', 'max_iterations' : 25}
     options_for_augmentation = {

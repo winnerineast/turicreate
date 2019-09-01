@@ -48,7 +48,7 @@ def _raise_error_if_not_drawing_classifier_input_sframe(
 
 def create(input_dataset, target, feature=None, validation_set='auto',
             warm_start='auto', batch_size=256,
-            max_iterations=100, verbose=True):
+            max_iterations=500, verbose=True):
     """
     Create a :class:`DrawingClassifier` model.
 
@@ -126,9 +126,7 @@ def create(input_dataset, target, feature=None, validation_set='auto',
 
         # Make predictions on the training set and as column to the SFrame
         >>> data['predictions'] = model.predict(data)
-
     """
-
     import mxnet as _mx
     from mxnet import autograd as _autograd
     from ._model_architecture import Model as _Model
@@ -300,7 +298,7 @@ def create(input_dataset, target, feature=None, validation_set='auto',
 
         # Make one step of parameter update. Trainer needs to know the
         # batch size of data to normalize the gradient by 1/batch_size.
-        trainer.step(train_batch.data[0].shape[0])
+        trainer.step(train_batch.data[0].shape[0], ignore_stale_grad=True)
         # calculate training metrics
         train_loss = loss.mean().asscalar()
 
@@ -543,7 +541,6 @@ class DrawingClassifier(_CustomModel):
         The "probabilities" column contains the probabilities for each class
         that the model predicted for the data provided to the function.
         """
-
         from .._mxnet import _mxnet_utils
         import mxnet as _mx
         from ._sframe_loader import SFrameClassifierIter as _SFrameClassifierIter
