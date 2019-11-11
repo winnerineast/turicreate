@@ -101,19 +101,15 @@ void unity_sframe::construct_from_sframe_index(std::string location) {
 
   auto status = fileio::get_file_status(location);
 
-  if ((status.first == fileio::file_status::FS_UNAVAILABLE ||
+  if ((status.first == fileio::file_status::REGULAR_FILE ||
+       status.first == fileio::file_status::FS_UNAVAILABLE ||
        status.first == fileio::file_status::MISSING) &&
       fileio::is_web_protocol(fileio::get_protocol(location))) {
     // if it is a web protocol, we cannot be certain what type of file it is.
     // HEURISTIC:
-    //   assume it is a "directory" and try to load dir_archive.ini
     //   if we can open it, it is a regular file. Otherwise not.
     if (fileio::try_to_open_file(location + "/dir_archive.ini")) {
       status.first = fileio::file_status::DIRECTORY;
-      status.second.clear();
-    }
-    else {
-      status.first = fileio::file_status::REGULAR_FILE;
       status.second.clear();
     }
   }
@@ -491,6 +487,13 @@ std::shared_ptr<unity_sframe_base> unity_sframe::select_columns(
   std::shared_ptr<unity_sframe> ret(new unity_sframe());
   ret->construct_from_planner_node(new_planner_node,
                                    new_column_names);
+  return ret;
+}
+
+std::shared_ptr<unity_sframe_base> unity_sframe::copy(){
+  auto ret = std::make_shared<unity_sframe>();
+  auto new_planner_node = std::make_shared<planner_node>(*(this->get_planner_node()));
+  ret->construct_from_planner_node(new_planner_node, this->column_names());
   return ret;
 }
 
@@ -916,10 +919,7 @@ std::shared_ptr<unity_sframe_base> unity_sframe::append(
   if (this->num_columns() == 0) {
     return other;
   } else if (other_sframe->num_columns() == 0) {
-    auto ret = std::make_shared<unity_sframe>();
-    auto new_planner_node = std::make_shared<planner_node>(*(this->get_planner_node()));
-    ret->construct_from_planner_node(new_planner_node, this->column_names());
-    return ret;
+    return copy();
   }
 
   // Error checking and reorder other sframe if necessary
@@ -1156,8 +1156,12 @@ std::shared_ptr<unity_sframe_base> unity_sframe::sample(float percent,
                                                         int random_seed,
                                                         bool exact) {
   logstream(LOG_INFO) << "Args: " << percent << ", " << random_seed << std::endl;
+  if (percent == 1.0){
+    return copy();
+  }
   auto logical_filter_array = std::static_pointer_cast<unity_sarray>(
     unity_sarray::make_uniform_boolean_array(size(), percent, random_seed, exact));
+
   return logical_filter(logical_filter_array);
 }
 

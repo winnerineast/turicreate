@@ -38,6 +38,9 @@ std::pair<sparse_vector, sparse_vector>
       value_to_index[kv.first] = current_index;
       current_index++;
     }
+    if (kv.second.get_type() == flex_type_enum::STRING)
+         log_and_throw("At least one of the dictionary values could not be converted to a number.");
+
     size_t index = value_to_index.at(kv.first);
     av.coeffRef(index) = kv.second;
   }
@@ -48,6 +51,9 @@ std::pair<sparse_vector, sparse_vector>
       value_to_index[kv.first] = current_index;
       current_index++;
     }
+    if (kv.second.get_type() == flex_type_enum::STRING)
+         log_and_throw("At least one of the dictionary values could not be converted to a number.");
+
     size_t index = value_to_index.at(kv.first);
     bv.coeffRef(index) = kv.second;
   }
@@ -175,10 +181,6 @@ double cosine(const flexible_type& a, const flexible_type& b) {
   return compute_distance("cosine", a, b);
 }
 
-double dot_product(const flexible_type& a, const flexible_type& b) {
-  return compute_distance("dot_product", a, b);
-}
-
 double transformed_dot_product(const flexible_type& a, const flexible_type& b) {
   return compute_distance("transformed_dot_product", a, b);
 }
@@ -269,8 +271,6 @@ REGISTER_FUNCTION(squared_euclidean, "x", "y")
 REGISTER_DOCSTRING(squared_euclidean, "Compute the squared Euclidean distance between two dictionaries or two lists of equal length.");
 REGISTER_FUNCTION(cosine, "x", "y")
 REGISTER_DOCSTRING(cosine, "Compute the cosine distance between two dictionaries or two lists of equal length.");
-REGISTER_FUNCTION(dot_product, "x", "y")
-REGISTER_DOCSTRING(dot_product, "Compute the dot_product distance between two dictionaries or two lists of equal length.");
 REGISTER_FUNCTION(transformed_dot_product, "x", "y")
 REGISTER_DOCSTRING(transformed_dot_product, "Compute the dot product between two dictionaries or two lists of equal length.");
 REGISTER_FUNCTION(manhattan, "x", "y")

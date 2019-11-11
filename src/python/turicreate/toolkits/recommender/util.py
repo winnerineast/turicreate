@@ -520,25 +520,6 @@ class _Recommender(_Model):
         return None
 
 
-    @classmethod
-    def _get_queryable_methods(cls):
-        '''Returns a list of method names that are queryable through Predictive
-        Service'''
-        return {'predict': {
-                    'dataset': 'sframe',
-                    'new_observation_data': 'sframe',
-                    'new_user_data': 'sframe',
-                    'new_item_data': 'sframe'
-                },
-                'recommend': {
-                    'users': ['sframe', 'sarray'],
-                    'items': ['sframe', 'sarray'],
-                    'new_observation_data': 'sframe',
-                    'new_user_data': 'sframe',
-                    'new_item_data': 'sframe',
-                    'exclude': 'sframe'}
-                }
-
 
     def _list_fields(self):
         """
@@ -1456,6 +1437,7 @@ class _Recommender(_Model):
         recommendations = self.recommend(
             users                = users,
             new_observation_data = observed_items,
+	    exclude		= exclude,
             k                    = k,
             items                = items,
             new_user_data        = new_user_data,
@@ -1468,26 +1450,6 @@ class _Recommender(_Model):
         del recommendations[user_id]
 
         return recommendations
-
-
-    def _training_stats(self):
-        """
-        Get information about model creation, e.g. time elapsed during
-        model fitting, data loading, and more.
-
-        Note: This method will be *deprecated* soon. Please use m.summary()
-        instead.
-
-        Returns
-        -------
-        out : dict
-            Statistics about model training, e.g. runtime.
-
-        """
-
-        _logging.warning("This method will be deprecated soon. Please use m.summary().")
-        response = self.__proxy__.get_train_stats()
-        return response
 
     def evaluate_precision_recall(self, dataset, cutoffs=list(range(1,11,1))+list(range(11,50,5)),
                                   skip_set=None, exclude_known=True,

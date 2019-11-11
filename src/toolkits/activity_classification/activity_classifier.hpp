@@ -21,7 +21,7 @@ namespace activity_classification {
 class EXPORT activity_classifier: public ml_model_base {
 
  public:
-  
+
   static std::tuple<gl_sframe, gl_sframe> random_split_by_session(
       gl_sframe data, std::string session_id_column_name, float fraction,
       size_t seed);
@@ -40,6 +40,9 @@ class EXPORT activity_classifier: public ml_model_base {
              std::map<std::string, flexible_type> opts);
   gl_sarray predict(gl_sframe data, std::string output_type);
   gl_sframe predict_per_window(gl_sframe data, std::string output_type);
+  gl_sframe classify(gl_sframe data, std::string output_frequency);
+  gl_sframe predict_topk(gl_sframe data, std::string output_type, size_t k,
+                         std::string output_frequency);
   variant_map_type evaluate(gl_sframe data, std::string metric);
   std::shared_ptr<coreml::MLModelWrapper> export_to_coreml(
       std::string filename);
@@ -156,6 +159,17 @@ class EXPORT activity_classifier: public ml_model_base {
       "    - 'class': Class prediction. This returns the class with maximum\n"
       "      probability per prediction_window.\n");
 
+
+  REGISTER_CLASS_MEMBER_FUNCTION(activity_classifier::classify, "data",
+                                 "output_frequency");
+  register_defaults("classify", {{"output_frequency", "per_row"}});
+
+  REGISTER_CLASS_MEMBER_FUNCTION(activity_classifier::predict_topk, "data",
+                                 "output_type", "k", "output_frequency");
+  register_defaults("predict_topk", {{"output_type", "probability"},
+                                     {"k", 3},
+                                     {"output_frequency", "per_row"}});
+
   REGISTER_CLASS_MEMBER_FUNCTION(activity_classifier::evaluate, "data",
                                  "metric");
   register_defaults("evaluate", {{"metric", std::string("auto")}});
@@ -201,7 +215,8 @@ class EXPORT activity_classifier: public ml_model_base {
       const;
 
   // Returns the initial neural network to train
-  virtual std::unique_ptr<neural_net::model_spec> init_model() const;
+  virtual std::unique_ptr<neural_net::model_spec> init_model(
+      bool use_random_init) const;
 
   virtual std::tuple<gl_sframe, gl_sframe> init_data(
       gl_sframe data, variant_type validation_data,

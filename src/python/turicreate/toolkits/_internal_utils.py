@@ -31,6 +31,17 @@ _proxy_map = {UnitySFrameProxy: (lambda x: _SFrame(_proxy=x)),
               UnitySArrayProxy: (lambda x: _SArray(_proxy=x)),
               UnityGraphProxy: (lambda x: _SGraph(_proxy=x))}
 
+def _read_env_var_cpp(var_name):
+    """
+    Reads environment variables used to enable/disable the new C++
+    implementations of existing Python toolkits.
+    """
+    # Default to using the C++ implementation for toolkits that have one.
+    # TODO: Remove the old implementations, and this function, once the dust has
+    #       settled.
+    import os as _os
+    return bool(int(_os.environ.get(var_name, "1")))
+
 def _toolkit_serialize_summary_struct(model, sections, section_titles):
     """
       Serialize model summary into a dict with ordered lists of sections and section titles
@@ -99,7 +110,8 @@ def _find_only_column_of_type(sframe, target_type, type_name, col_name):
                 raise ToolkitError('No "{col_name}" column specified and more than one {type_name} column in "dataset". Can not infer correct {col_name} column.'.format(col_name=col_name, type_name=type_name))
             image_column_name = name
     if image_column_name is None:
-        raise ToolkitError('No %s column in "dataset".' % type_name)
+        raise ToolkitError('No "{col_name}" column specified and no column with expected type "{type_name}" is found.'.format(col_name=col_name, type_name=type_name)
+            + ' "datasets" consists of columns with types: '+ ', '.join([x.__name__ for x in sframe.column_types()])+'.')
     return image_column_name
 
 def _find_only_image_column(sframe):

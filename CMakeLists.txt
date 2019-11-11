@@ -26,7 +26,7 @@ set(CMAKE_PREFIX_PATH ${CMAKE_SOURCE_DIR}/deps/local)
 set(ENV{PATH} "${CMAKE_SOURCE_DIR}/deps/local/bin:${CMAKE_SOURCE_DIR}/deps/env/bin:$ENV{PATH}")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if(${TC_BUILD_PYTHON})
+if(TC_BUILD_PYTHON)
   message("Building python libraries.")
 
   if(NOT EXISTS ${CMAKE_SOURCE_DIR}/deps/env/)
@@ -260,15 +260,15 @@ endif()
 
 if(TC_BUILD_IOS)
   add_definitions(-DTC_BUILD_IOS)
-  add_definitions(-DTC_NO_CURL)
-  set(TC_ENABLE_REMOTEFS 0)
+
+  if(${TC_BUILD_REMOTEFS})
+    message(ERROR "RemoteFS must be disabled for building iOS.")
+  endif()
+
 endif()
 
-if(${TC_ENABLE_REMOTEFS})
-  add_definitions(-DTC_ENABLE_REMOTEFS)
-  add_definitions(-DCURL_STATICLIB)
-else()
-  add_definitions(-DTC_NO_CURL)
+if(NOT ${TC_BUILD_REMOTEFS})
+  add_definitions(-DTC_DISABLE_REMOTEFS)
 endif()
 
 if (${TC_EXTRA_OPTIMIZATION_FLAGS})
@@ -1154,8 +1154,12 @@ endforeach()
 include_directories(src)
 include_directories(src/core/system/platform)
 include_directories(SYSTEM src/external)
-include_directories(SYSTEM src/external/aws-sdk-cpp/aws-cpp-sdk-core/include)
-include_directories(SYSTEM src/external/aws-sdk-cpp/aws-cpp-sdk-s3/include)
+
+if(${TC_BUILD_REMOTEFS})
+  include_directories(SYSTEM src/external/aws-sdk-cpp/aws-cpp-sdk-core/include)
+  include_directories(SYSTEM src/external/aws-sdk-cpp/aws-cpp-sdk-s3/include)
+endif()
+
 include_directories(SYSTEM src/external/google)
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/extensions)
@@ -1243,6 +1247,7 @@ set(_TC_COMMON_OBJECTS
   "$<TARGET_OBJECTS:unity_recsys>"
   "$<TARGET_OBJECTS:unity_sgd>"
   "$<TARGET_OBJECTS:unity_sparse_similarity>"
+  "$<TARGET_OBJECTS:unity_style_transfer>"
   "$<TARGET_OBJECTS:unity_text>"
   "$<TARGET_OBJECTS:unity_util>"
   "$<TARGET_OBJECTS:util>"
@@ -1302,7 +1307,7 @@ if(APPLE)
     endif()
   endif()
 endif()
-if(NOT TC_BUILD_IOS)
+if(${TC_BUILD_REMOTEFS})
   # object targets that should be included in all APPLE and non-APPLE
   # platforms except for iOS
   set(_TC_COMMON_OBJECTS

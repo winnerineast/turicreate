@@ -74,7 +74,7 @@ def MIN(src_column):
   return ("__builtin__min__", [src_column])
 
 
-def COUNT(*args):
+def COUNT():
   """
   Builtin count aggregator for groupby
 
@@ -84,9 +84,7 @@ def COUNT(*args):
   ...            {'count':tc.aggregate.COUNT()})
 
   """
-  # arguments if any are ignored
   return ("__builtin__count__", [""])
-
 
 
 def AVG(src_column):

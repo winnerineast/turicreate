@@ -9,23 +9,47 @@
 #import <ml/neural_net/mps_device_manager.h>
 
 #include <core/logging/logger.hpp>
+#include <core/storage/fileio/fileio_constants.hpp>
 #include <ml/neural_net/mps_cnnmodule.h>
 #include <ml/neural_net/mps_graph_cnnmodule.h>
 #include <ml/neural_net/mps_image_augmentation.hpp>
+
+#import <ml/neural_net/style_transfer/mps_style_transfer_backend.hpp>
 
 namespace turi {
 namespace neural_net {
 
 namespace {
 
+float_array_map multiply_mps_od_loss_multiplier(float_array_map config,
+                                                const std::vector<std::string>& update_keys) {
+  for (const std::string& key : update_keys) {
+    auto config_iter = config.find(key);
+    if (config_iter != config.end()) {
+      float old_value = config_iter->second.data()[0];
+      float new_value;
+      if (key == "learning_rate") {
+        new_value = old_value / MPS_OD_LOSS_MULTIPLIER;
+      } else {
+        new_value = old_value * MPS_OD_LOSS_MULTIPLIER;
+      }
+      config_iter->second = shared_float_array::wrap(new_value);
+    }
+  }
+  return config;
+}
+
 std::unique_ptr<compute_context> create_mps_compute_context() {
+  // If the user has disabled GPU usage, don't use MPS at all.
+  if (fileio::NUM_GPUS == 0) return nullptr;
+
   return std::unique_ptr<compute_context>(new mps_compute_context);
 }
 
 // At static-init time, register create_mps_compute_context().
 // TODO: Codify priority levels?
 static auto* mps_registration = new compute_context::registration(
-    /* priority */ 0, &create_mps_compute_context);
+    /* priority */ 0, &create_mps_compute_context, nullptr);
 
 }  // namespace
 
@@ -86,12 +110,16 @@ mps_compute_context::create_image_augmenter_for_testing(
 std::unique_ptr<model_backend> mps_compute_context::create_object_detector(
     int n, int c_in, int h_in, int w_in, int c_out, int h_out, int w_out,
     const float_array_map& config, const float_array_map& weights) {
-
+  float_array_map updated_config;
+  std::vector<std::string> update_keys = {
+      "learning_rate", "od_scale_class", "od_scale_no_object", "od_scale_object",
+      "od_scale_wh",   "od_scale_xy",    "gradient_clipping"};
+  updated_config = multiply_mps_od_loss_multiplier(config, update_keys);
   std::unique_ptr<mps_graph_cnn_module> result(
       new mps_graph_cnn_module(*command_queue_));
 
   result->init(/* network_id */ kODGraphNet, n, c_in, h_in, w_in, c_out, h_out,
-               w_out, config, weights);
+               w_out, updated_config, weights);
 
   return result;
 }
@@ -107,6 +135,23 @@ std::unique_ptr<model_backend> mps_compute_context::create_activity_classifier(
   result->load(weights);
 
   return result;
+}
+
+std::unique_ptr<model_backend> mps_compute_context::create_style_transfer(
+    const float_array_map& config, const float_array_map& weights) {
+#ifdef HAS_MACOS_10_15
+  return std::unique_ptr<model_backend>(
+      new style_transfer::mps_style_transfer(config, weights, *command_queue_));
+#else
+  return nullptr;
+#endif
+}
+
+std::unique_ptr<model_backend> mps_compute_context::create_drawing_classifier(
+    /* TODO: const float_array_map& config if needed */
+    const float_array_map& weights,
+    size_t batch_size, size_t num_classes) {
+  return nullptr;
 }
 
 }  // namespace neural_net

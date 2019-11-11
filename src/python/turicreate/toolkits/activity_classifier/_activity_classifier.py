@@ -24,14 +24,16 @@ from turicreate.toolkits._main import ToolkitError as _ToolkitError
 from turicreate.toolkits import evaluation as _evaluation
 
 from turicreate.toolkits._model import CustomModel as _CustomModel
+from turicreate.toolkits._model import Model as _Model
 from turicreate.toolkits._model import PythonProxy as _PythonProxy
 
 from .util import random_split_by_session as _random_split_by_session
 from .util import _MIN_NUM_SESSIONS_FOR_SPLIT
 
+USE_CPP = _tkutl._read_env_var_cpp('TURI_AC_USE_CPP_PATH')
 
 def create(dataset, session_id, target, features=None, prediction_window=100,
-           validation_set='auto', max_iterations=10, batch_size=32, verbose=True):
+           validation_set='auto', max_iterations=10, batch_size=32, verbose=True, **kwargs):
     """
     Create an :class:`ActivityClassifier` model.
 
@@ -129,16 +131,6 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     --------
     ActivityClassifier, util.random_split_by_session
     """
-    from .._mxnet import _mxnet_utils
-    from ._mx_model_architecture import _net_params
-    from ._sframe_sequence_iterator import SFrameSequenceIter as _SFrameSequenceIter
-    from ._sframe_sequence_iterator import prep_data as _prep_data
-    from ._mx_model_architecture import _define_model_mxnet, _fit_model_mxnet
-    from ._mps_model_architecture import _define_model_mps, _fit_model_mps
-    from .._mps_utils import (use_mps as _use_mps,
-                              mps_device_name as _mps_device_name,
-                              ac_weights_mps_to_mxnet as _ac_weights_mps_to_mxnet)
-
 
     _tkutl._raise_error_if_not_sframe(dataset, "dataset")
     if not isinstance(target, str):
@@ -165,6 +157,49 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     _tkutl._raise_error_if_sarray_not_expected_dtype(dataset[target], target, [str, int])
     _tkutl._raise_error_if_sarray_not_expected_dtype(dataset[session_id], session_id, [str, int])
 
+    for feature in features:
+        _tkutl._handle_missing_values(dataset, feature, 'training_dataset')
+
+    if '_advanced_parameters' in kwargs:
+        # Make sure no additional parameters are provided
+        new_keys = set(kwargs['_advanced_parameters'].keys())
+        set_keys = set(params.keys())
+        unsupported = new_keys - set_keys
+        if unsupported:
+            raise _ToolkitError('Unknown advanced parameters: {}'.format(unsupported))
+        params.update(kwargs['_advanced_parameters'])
+
+    # C++ model
+
+    if USE_CPP:
+
+        name = 'activity_classifier'
+
+        import turicreate as _turicreate
+
+        # Imports tensorflow
+        import turicreate.toolkits.libtctensorflow
+
+        model = _turicreate.extensions.activity_classifier()
+        options = {}
+        options['prediction_window'] = prediction_window
+        options['batch_size'] = batch_size
+        options['max_iterations'] = max_iterations
+        options['verbose'] = verbose
+
+        model.train(dataset, target, session_id, validation_set, options)
+        return ActivityClassifier_beta(model_proxy=model, name=name)
+        
+    from .._mxnet import _mxnet_utils
+    from ._mx_model_architecture import _net_params
+    from ._sframe_sequence_iterator import SFrameSequenceIter as _SFrameSequenceIter
+    from ._sframe_sequence_iterator import prep_data as _prep_data
+    from ._mx_model_architecture import _define_model_mxnet, _fit_model_mxnet
+    from ._mps_model_architecture import _define_model_mps, _fit_model_mps
+    from .._mps_utils import (use_mps as _use_mps,
+                              mps_device_name as _mps_device_name,
+                              ac_weights_mps_to_mxnet as _ac_weights_mps_to_mxnet)
+
     if isinstance(validation_set, str) and validation_set == 'auto':
         # Computing the number of unique sessions in this way is relatively
         # expensive. Ideally we'd incorporate this logic into the C++ code that
@@ -176,9 +211,6 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
             validation_set = None
         else:
             dataset, validation_set = _random_split_by_session(dataset, session_id)
-
-    for feature in features:
-        _tkutl._handle_missing_values(dataset, feature, 'training_dataset')
 
     # Encode the target column to numerical values
     use_target = target is not None
@@ -205,6 +237,7 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     # Create data iterators
     user_provided_batch_size = batch_size
     batch_size = max(batch_size, num_mxnet_gpus, 1)
+
     use_mx_data_batch = not use_mps
     data_iter = _SFrameSequenceIter(chunked_data, len(features),
                                     prediction_window, predictions_in_chunk,
@@ -233,19 +266,16 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
 
     # Always create MXNet models, as the pred_model is later saved to the state
     # If MPS is used - the loss_model will be overwritten
-    loss_model, pred_model = _define_model_mxnet(len(target_map), prediction_window,
-                                                 predictions_in_chunk, context)
+    loss_model, pred_model = _define_model_mxnet(len(target_map), prediction_window, predictions_in_chunk, context)
 
     if use_mps:
         loss_model = _define_model_mps(batch_size, len(features), len(target_map),
                                        prediction_window, predictions_in_chunk, is_prediction_model=False)
 
         log = _fit_model_mps(loss_model, data_iter, valid_iter, max_iterations, verbose)
-
     else:
         # Train the model using Mxnet
-        log = _fit_model_mxnet(loss_model, data_iter, valid_iter,
-                         max_iterations, num_mxnet_gpus, verbose)
+        log = _fit_model_mxnet(loss_model, data_iter, valid_iter, max_iterations, num_mxnet_gpus, verbose)
 
     # Set up prediction model
     pred_model.bind(data_shapes=data_iter.provide_data, label_shapes=None,
@@ -254,6 +284,7 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     if use_mps:
         mps_params = loss_model.export()
         arg_params, aux_params = _ac_weights_mps_to_mxnet(mps_params, _net_params['lstm_h'])
+
     else:
         arg_params, aux_params = loss_model.get_params()
 
@@ -290,6 +321,20 @@ def create(dataset, session_id, target, features=None, prediction_window=100,
     model = ActivityClassifier(state)
     return model
 
+def _initialize_with_mxnet_weights(model, chunked_data, features, prediction_window, predictions_in_chunk, batch_size, use_target):
+    from ._sframe_sequence_iterator import SFrameSequenceIter as _SFrameSequenceIter
+    import mxnet as _mx
+
+    dummy_data_iter = _SFrameSequenceIter(chunked_data, len(features),
+                                    prediction_window, predictions_in_chunk,
+                                batch_size, use_target=use_target, mx_output=True)
+    model.bind(data_shapes=dummy_data_iter.provide_data, label_shapes=dummy_data_iter.provide_label)
+    model.init_params(initializer=_mx.init.Xavier())
+    net_params, aux = model.get_params()
+
+    # Dictionary with layer names as key and initialised value as value
+    net_params.update(aux)
+    return net_params
 
 def _encode_target(data, target, mapping=None):
     """ Encode targets to integers in [0, num_classes - 1] """
@@ -298,6 +343,310 @@ def _encode_target(data, target, mapping=None):
 
     data[target] = data[target].apply(lambda t: mapping[t])
     return data, mapping
+
+class ActivityClassifier_beta(_Model):
+    """
+    A trained model using C++ implementation that is ready to use for classification or export to
+    CoreML.
+
+    This model should not be constructed directly.
+    """
+    _CPP_ACTIVITY_CLASSIFIER_VERSION = 1
+
+    def __init__(self, model_proxy=None, name=None):
+        self.__proxy__ = model_proxy
+        self.__name__ = name
+
+    @classmethod
+    def _native_name(cls):
+        if USE_CPP:
+            return "activity_classifier"
+        return None
+
+    def __str__(self):
+        """
+        Return a string description of the model to the ``print`` method.
+
+        Returns
+        -------
+        out : string
+            A description of the model.
+        """
+        return self.__class__.__name__
+
+    def __repr__(self):
+        """
+        Returns a string description of the model, including (where relevant)
+        the schema of the training data, description of the training data,
+        training statistics, and model hyperparameters.
+
+        Returns
+        -------
+        out : string
+            A description of the model.
+        """
+        return self.__class__.__name__
+
+    def _get_version(self):
+        return self._CPP_ACTIVITY_CLASSIFIER_VERSION
+
+    def export_coreml(self, filename):
+        """
+        Export the model in Core ML format.
+
+        Parameters
+        ----------
+        filename: str
+          A valid filename where the model can be saved.
+
+        Examples
+        --------
+        >>> model.export_coreml("MyModel.mlmodel")
+        """
+        return self.__proxy__.export_to_coreml(filename)
+
+
+    def predict(self, dataset, output_type='class', output_frequency='per_row'):
+        """
+        Return predictions for ``dataset``, using the trained activity classifier.
+        Predictions can be generated as class labels, or as a probability
+        vector with probabilities for each class.
+
+        The activity classifier generates a single prediction for each
+        ``prediction_window`` rows in ``dataset``, per ``session_id``. The number
+        of these predictions is smaller than the length of ``dataset``. By default,
+        when ``output_frequency='per_row'``, each prediction is repeated ``prediction_window`` to return
+        a prediction for each row of ``dataset``. Use ``output_frequency=per_window`` to
+        get the unreplicated predictions.
+
+        Parameters
+        ----------
+        dataset : SFrame
+            Dataset of new observations. Must include columns with the same
+            names as the features used for model training, but does not require
+            a target column. Additional columns are ignored.
+
+        output_type : {'class', 'probability_vector'}, optional
+            Form of each prediction which is one of:
+
+            - 'probability_vector': Prediction probability associated with each
+              class as a vector. The probability of the first class (sorted
+              alphanumerically by name of the class in the training set) is in
+              position 0 of the vector, the second in position 1 and so on.
+            - 'class': Class prediction. This returns the class with maximum
+              probability.
+
+        output_frequency : {'per_row', 'per_window'}, optional
+            The frequency of the predictions which is one of:
+
+            - 'per_window': Return a single prediction for each
+              ``prediction_window`` rows in ``dataset`` per ``session_id``.
+            - 'per_row': Convenience option to make sure the number of
+              predictions match the number of rows in the dataset. Each
+              prediction from the model is repeated ``prediction_window``
+              times during that window.
+
+        Returns
+        -------
+        out : SArray | SFrame
+            If ``output_frequency`` is 'per_row' return an SArray with predictions
+            for each row in ``dataset``.
+            If ``output_frequency`` is 'per_window' return an SFrame with
+            predictions for ``prediction_window`` rows in ``dataset``.
+
+        See Also
+        ----------
+        create, evaluate, classify
+
+        Examples
+        --------
+
+        .. sourcecode:: python
+
+            # One prediction per row
+            >>> probability_predictions = model.predict(
+            ...     data, output_type='probability_vector', output_frequency='per_row')[:4]
+            >>> probability_predictions
+
+            dtype: array
+            Rows: 4
+            [array('d', [0.01857384294271469, 0.0348394550383091, 0.026018327102065086]),
+             array('d', [0.01857384294271469, 0.0348394550383091, 0.026018327102065086]),
+             array('d', [0.01857384294271469, 0.0348394550383091, 0.026018327102065086]),
+             array('d', [0.01857384294271469, 0.0348394550383091, 0.026018327102065086])]
+
+            # One prediction per window
+            >>> class_predictions = model.predict(
+            ...     data, output_type='class', output_frequency='per_window')
+            >>> class_predictions
+
+            +---------------+------------+-----+
+            | prediction_id | session_id |class|
+            +---------------+------------+-----+
+            |       0       |     3      |  5  |
+            |       1       |     3      |  5  |
+            |       2       |     3      |  5  |
+            |       3       |     3      |  5  |
+            |       4       |     3      |  5  |
+            |       5       |     3      |  5  |
+            |       6       |     3      |  5  |
+            |       7       |     3      |  4  |
+            |       8       |     3      |  4  |
+            |       9       |     3      |  4  |
+            |      ...      |    ...     | ... |
+            +---------------+------------+-----+
+        """
+        _tkutl._check_categorical_option_type(
+            'output_frequency', output_frequency, ['per_window', 'per_row'])
+        if output_frequency == 'per_row':
+            return self.__proxy__.predict(dataset, output_type)
+        elif output_frequency == 'per_window':
+            return self.__proxy__.predict_per_window(dataset, output_type)
+
+
+    def evaluate(self, dataset, metric='auto'):
+        """
+        Evaluate the model by making predictions of target values and comparing
+        these to actual values.
+
+        Parameters
+        ----------
+        dataset : SFrame
+            Dataset of new observations. Must include columns with the same
+            names as the session_id, target and features used for model training.
+            Additional columns are ignored.
+
+        metric : str, optional
+            Name of the evaluation metric.  Possible values are:
+
+            - 'auto'             : Returns all available metrics.
+            - 'accuracy'         : Classification accuracy (micro average).
+            - 'auc'              : Area under the ROC curve (macro average)
+            - 'precision'        : Precision score (macro average)
+            - 'recall'           : Recall score (macro average)
+            - 'f1_score'         : F1 score (macro average)
+            - 'log_loss'         : Log loss
+            - 'confusion_matrix' : An SFrame with counts of possible
+                                   prediction/true label combinations.
+            - 'roc_curve'        : An SFrame containing information needed for an
+                                   ROC curve
+
+        Returns
+        -------
+        out : dict
+            Dictionary of evaluation results where the key is the name of the
+            evaluation metric (e.g. `accuracy`) and the value is the evaluation
+            score.
+
+        See Also
+        ----------
+        create, predict
+
+        Examples
+        ----------
+        .. sourcecode:: python
+
+          >>> results = model.evaluate(data)
+          >>> print results['accuracy']
+        """
+        return self.__proxy__.evaluate(dataset, metric)
+
+    def predict_topk(self, dataset, output_type='probability', k=3, output_frequency='per_row'):
+        """
+        Return top-k predictions for the ``dataset``, using the trained model.
+        Predictions are returned as an SFrame with three columns: `prediction_id`,
+        `class`, and `probability`, or `rank`, depending on the ``output_type``
+        parameter.
+
+        Parameters
+        ----------
+        dataset : SFrame
+            Dataset of new observations. Must include columns with the same
+            names as the features and session id used for model training, but
+            does not require a target column. Additional columns are ignored.
+
+        output_type : {'probability', 'rank'}, optional
+            Choose the return type of the prediction:
+
+            - `probability`: Probability associated with each label in the prediction.
+            - `rank`       : Rank associated with each label in the prediction.
+
+        k : int, optional
+            Number of classes to return for each input example.
+
+        output_frequency : {'per_row', 'per_window'}, optional
+            The frequency of the predictions which is one of:
+
+            - 'per_row': Each prediction is returned ``prediction_window`` times.
+            - 'per_window': Return a single prediction for each
+              ``prediction_window`` rows in ``dataset`` per ``session_id``.
+
+        Returns
+        -------
+        out : SFrame
+            An SFrame with model predictions.
+
+        See Also
+        --------
+        predict, classify, evaluate
+
+        Examples
+        --------
+        >>> pred = m.predict_topk(validation_data, k=3)
+        >>> pred
+        +---------------+-------+-------------------+
+        |     row_id    | class |    probability    |
+        +---------------+-------+-------------------+
+        |       0       |   4   |   0.995623886585  |
+        |       0       |   9   |  0.0038311756216  |
+        |       0       |   7   | 0.000301006948575 |
+        |       1       |   1   |   0.928708016872  |
+        |       1       |   3   |  0.0440889261663  |
+        |       1       |   2   |  0.0176190119237  |
+        |       2       |   3   |   0.996967732906  |
+        |       2       |   2   |  0.00151345680933 |
+        |       2       |   7   | 0.000637513934635 |
+        |       3       |   1   |   0.998070061207  |
+        |      ...      |  ...  |        ...        |
+        +---------------+-------+-------------------+
+        """
+        return self.__proxy__.predict_topk(dataset, output_type, k, output_frequency);
+
+    def classify(self, dataset, output_frequency='per_row'):
+        """
+        Return a classification, for each ``prediction_window`` examples in the
+        ``dataset``, using the trained activity classification model. The output
+        SFrame contains predictions as both class labels as well as probabilities
+        that the predicted value is the associated label.
+
+        Parameters
+        ----------
+        dataset : SFrame
+            Dataset of new observations. Must include columns with the same
+            names as the features and session id used for model training, but
+            does not require a target column. Additional columns are ignored.
+
+        output_frequency : {'per_row', 'per_window'}, optional
+            The frequency of the predictions which is one of:
+
+            - 'per_row': Each prediction is returned ``prediction_window`` times.
+            - 'per_window': Return a single prediction for each
+              ``prediction_window`` rows in ``dataset`` per ``session_id``.
+
+        Returns
+        -------
+        out : SFrame
+            An SFrame with model predictions i.e class labels and probabilities.
+
+        See Also
+        ----------
+        create, evaluate, predict
+
+        Examples
+        ----------
+        >>> classes = model.classify(data)
+        """
+        return self.__proxy__.classify(dataset, output_frequency);
 
 class ActivityClassifier(_CustomModel):
     """
@@ -348,7 +697,9 @@ class ActivityClassifier(_CustomModel):
 
     @classmethod
     def _native_name(cls):
-        return "activity_classifier"
+        if not USE_CPP:
+            return "activity_classifier"
+        return None
 
     def _get_version(self):
         return self._PYTHON_ACTIVITY_CLASSIFIER_VERSION

@@ -1,7 +1,8 @@
 /* Copyright © 2017 Apple Inc. All rights reserved.
  *
  * Use of this source code is governed by a BSD-3-clause license that can
- * be found in the LICENSE.txt file or at https://opensource.org/licenses/BSD-3-Clause
+ * be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 
 #include <toolkits/activity_classification/activity_classifier.hpp>
@@ -13,11 +14,12 @@
 
 #include <core/logging/assertions.hpp>
 #include <core/logging/logger.hpp>
+#include <core/util/string_util.hpp>
 #include <model_server/lib/variant_deep_serialize.hpp>
+#include <timer/timer.hpp>
 #include <toolkits/coreml_export/neural_net_models_exporter.hpp>
 #include <toolkits/evaluation/metrics.hpp>
-#include <core/util/string_util.hpp>
-
+#include <toolkits/util/training_utils.hpp>
 
 namespace turi {
 namespace activity_classification {
@@ -27,10 +29,11 @@ namespace {
 using coreml::MLModelWrapper;
 using neural_net::compute_context;
 using neural_net::float_array_map;
+using neural_net::lstm_weight_initializers;
 using neural_net::model_backend;
 using neural_net::model_spec;
-using neural_net::lstm_weight_initializers;
 using neural_net::shared_float_array;
+using neural_net::weight_initializer;
 using neural_net::xavier_weight_initializer;
 using neural_net::zero_weight_initializer;
 
@@ -81,7 +84,7 @@ size_t count_correct_predictions(size_t num_classes, const shared_float_array& o
 
   const float* output_ptr = output_chunk.data();
   const float* truth_ptr = label_chunk.data();
-  
+
   size_t num_correct_predictions = 0;
 
   for (size_t i = 0; i < num_samples; i+=prediction_window) {
@@ -143,7 +146,8 @@ void activity_classifier::load_version(iarchive& iarc, size_t version) {
   // Load neural net weights.
   float_array_map nn_params;
   iarc >> nn_params;
-  nn_spec_ = init_model();
+  bool use_random_init = false;
+  nn_spec_ = init_model(use_random_init);
   nn_spec_->update_params(nn_params);
 }
 
@@ -161,7 +165,7 @@ void activity_classifier::init_options(
       std::numeric_limits<int>::max());
   options.create_integer_option(
       "batch_size",
-      "Number of sequence chunks used per training setp",
+      "Number of sequence chunks used per training step",
       32,
       1,
       std::numeric_limits<int>::max());
@@ -184,6 +188,18 @@ void activity_classifier::init_options(
       FLEX_UNDEFINED,
       std::numeric_limits<int>::min(),
       std::numeric_limits<int>::max());
+  options.create_boolean_option(
+      "verbose",
+      "If set to False, the progress table is hidden.",
+      true,
+      true);
+  options.create_integer_option(
+      "num_sessions",
+      "Number of sessions.",
+      FLEX_UNDEFINED,
+      0,
+      std::numeric_limits<int>::max(),
+      true);
 
   // Validate user-provided options.
   options.set_options(opts);
@@ -328,6 +344,9 @@ void activity_classifier::train(
     std::string session_id_column_name, variant_type validation_data,
     std::map<std::string, flexible_type> opts)
 {
+
+  turi::timer time_object;
+  time_object.start();
   // Instantiate the training dependencies: data iterator, compute context,
   // backend NN model.
   init_train(data, target_column_name, session_id_column_name, validation_data,
@@ -374,6 +393,10 @@ void activity_classifier::train(
     }
   }
 
+  state_update["verbose"] = read_state<bool>("verbose");
+  state_update["num_examples"] = data.size();
+  state_update["training_time"] = time_object.current_time();
+
   add_or_update_state(state_update);
 
 }
@@ -382,8 +405,7 @@ gl_sarray activity_classifier::predict(gl_sframe data,
                                        std::string output_type) {
   if (output_type.empty()) {
     output_type = "class";
-  }
-  if (output_type != "class" && output_type != "probability_vector") {
+  } else if (output_type != "class" && output_type != "probability_vector") {
     log_and_throw(output_type + " is not a valid option for output_type.  Expected one of: probability_vector, class");
   }
 
@@ -427,8 +449,7 @@ gl_sframe activity_classifier::predict_per_window(gl_sframe data,
 
   if (output_type.empty()) {
     output_type = "class";
-  }
-  if (output_type != "class" && output_type != "probability_vector") {
+  } else if (output_type != "class" && output_type != "probability_vector") {
     log_and_throw(output_type + " is not a valid option for output_type.  "
                                 "Expected one of: probability_vector, class");
   }
@@ -440,11 +461,9 @@ gl_sframe activity_classifier::predict_per_window(gl_sframe data,
 
   // Accumulate the class probabilities for each prediction window.
   gl_sframe raw_preds_per_window = perform_inference(data_it.get());
-
   gl_sframe result =
       gl_sframe({{"session_id", raw_preds_per_window["session_id"]},
                  {"probability_vector", raw_preds_per_window["preds"]}});
-  result = result.add_row_number("prediction_id");
 
   if (output_type == "class") {
     flex_list class_labels = read_state<flex_list>("classes");
@@ -459,6 +478,203 @@ gl_sframe activity_classifier::predict_per_window(gl_sframe data,
     result.rename({{"probability_vector", "class"}});
   }
 
+  return result;
+}
+
+
+gl_sframe activity_classifier::classify(gl_sframe data,
+                                        std::string output_frequency) {
+  if (output_frequency != "per_row" &&
+             output_frequency != "per_window") {
+    log_and_throw(output_frequency +
+                  " is not a valid option for output_frequency.  "
+                  "Expected one of 'per_row' or 'per_window'.");
+  }
+
+  // perform inference
+  std::unique_ptr<data_iterator> data_it =
+      create_iterator(data, /* requires_labels */ false, /* is_train */ false,
+                      /* use_data_augmentation */ false);
+  gl_sframe raw_preds_per_window = perform_inference(data_it.get());
+
+  // lambda function for getting the max probability for each prediction
+  auto max_prob = [](const flexible_type& ft) {
+    const flex_vec& prob_vec = ft.get<flex_vec>();
+    auto max_it = std::max_element(prob_vec.begin(), prob_vec.end());
+    return prob_vec[max_it - prob_vec.begin()];
+  };
+
+  // lambda function for getting the class label with maximum probability for
+  // each prediction
+  flex_list class_labels = read_state<flex_list>("classes");
+  auto max_prob_label = [=](const flexible_type& ft) {
+    const flex_vec& prob_vec = ft.get<flex_vec>();
+    auto max_it = std::max_element(prob_vec.begin(), prob_vec.end());
+    return class_labels[max_it - prob_vec.begin()];
+  };
+
+  // get sarray with predicted class label and probability
+  gl_sarray class_sarray = raw_preds_per_window["preds"].apply(
+      max_prob_label, class_labels.front().get_type());
+  gl_sarray prob_sarray =
+      raw_preds_per_window["preds"].apply(max_prob, flex_type_enum::FLOAT);
+  raw_preds_per_window.add_column(class_sarray, "class");
+  raw_preds_per_window.add_column(prob_sarray, "probability");
+
+  // create the result
+  gl_sframe result = gl_sframe();
+  if (output_frequency == "per_window") {
+    result = gl_sframe({{"exp_id", raw_preds_per_window["session_id"]},
+                        {"class", raw_preds_per_window["class"]},
+                        {"probability", raw_preds_per_window["probability"]}});
+  } else {
+    size_t class_column_index = raw_preds_per_window.column_index("class");
+    size_t prob_column_index = raw_preds_per_window.column_index("probability");
+    size_t num_samples_column_index =
+        raw_preds_per_window.column_index("num_samples");
+
+    auto copy_class_per_row = [=](const sframe_rows::row& row) {
+      return flex_list(row[num_samples_column_index], row[class_column_index]);
+    };
+    auto copy_prob_per_row = [=](const sframe_rows::row& row) {
+      return flex_list(row[num_samples_column_index], row[prob_column_index]);
+    };
+
+    gl_sarray duplicated_class_sarray =
+        raw_preds_per_window.apply(copy_class_per_row, flex_type_enum::LIST);
+    gl_sarray duplicated_prob_sarray =
+        raw_preds_per_window.apply(copy_prob_per_row, flex_type_enum::LIST);
+    gl_sframe class_per_row =
+        gl_sframe({{"temp", duplicated_class_sarray}}).stack("temp", "class");
+    gl_sframe prob_per_row = gl_sframe({{"temp", duplicated_prob_sarray}})
+                                 .stack("temp", "probability");
+    result.add_column(class_per_row["class"], "class");
+    result.add_column(prob_per_row["probability"], "probability");
+  }
+  return result;
+}
+
+gl_sframe activity_classifier::predict_topk(gl_sframe data,
+                                            std::string output_type, size_t k,
+                                            std::string output_frequency) {
+  // check valid input arguments
+  if (output_type != "probability" && output_type != "rank") {
+    log_and_throw(output_type +
+                  " is not a valid option for output_type.  "
+                  "Expected one of: probability, rank");
+  }
+  if (output_frequency != "per_row" && output_frequency != "per_window") {
+    log_and_throw(output_frequency +
+                  " is not a valid option for output_frequency.  "
+                  "Expected one of: per_row, per_window");
+  }
+
+  // data inference
+  std::unique_ptr<data_iterator> data_it =
+      create_iterator(data, /* requires_labels */ false, /* is_train */ false,
+                      /* use_data_augmentation */ false);
+  gl_sframe raw_preds_per_window = perform_inference(data_it.get());
+
+  // argsort probability to get the index (rank) for top k class
+  // if k is greater than the class number, set it to be class number
+  flex_list class_labels = read_state<flex_list>("classes");
+  k = std::min(k, class_labels.size());
+  auto argsort_prob = [=](const flexible_type& ft) {
+    const flex_vec& prob_vec = ft.get<flex_vec>();
+    std::vector<size_t> index_vec(prob_vec.size());
+    std::iota(index_vec.begin(), index_vec.end(), 0);
+    auto compare = [&](size_t i, size_t j) {
+      return prob_vec[i] > prob_vec[j];
+    };
+    std::nth_element(index_vec.begin(), index_vec.begin() + k, index_vec.end(),
+                     compare);
+    std::sort(index_vec.begin(), index_vec.begin() + k, compare);
+    return flex_list(index_vec.begin(), index_vec.begin() + k);
+  };
+
+  // store the index in a column "rank"
+  raw_preds_per_window.add_column(
+      raw_preds_per_window["preds"].apply(argsort_prob, flex_type_enum::LIST),
+      "rank");
+
+  // get top k class name and store in a column "class"
+  size_t rank_column_index = raw_preds_per_window.column_index("rank");
+  auto get_class_name = [=](const sframe_rows::row& row) {
+    const flex_list& rank_list = row[rank_column_index];
+    flex_list topk_class;
+    for (const flexible_type i : rank_list) {
+      topk_class.push_back(class_labels[i]);
+    }
+    return topk_class;
+  };
+  raw_preds_per_window.add_column(
+      raw_preds_per_window.apply(get_class_name, flex_type_enum::LIST),
+      "class");
+
+  // if output_type is "probability" then change rank to probabilty
+  if (output_type == "probability") {
+    size_t prob_column_index = raw_preds_per_window.column_index("preds");
+    auto get_probability = [=](const sframe_rows::row& row) {
+      const flex_list& rank_list = row[rank_column_index];
+      flex_list topk_prob;
+      for (const flexible_type i : rank_list) {
+        topk_prob.push_back(row[prob_column_index][i]);
+      }
+      return topk_prob;
+    };
+    raw_preds_per_window["rank"] =
+        raw_preds_per_window.apply(get_probability, flex_type_enum::LIST);
+  }
+
+  // repeat "class" and "rank" column num_samples times if output_frequency is
+  // per_row
+  if (output_frequency == "per_row") {
+    size_t class_column_index = raw_preds_per_window.column_index("class");
+    size_t num_samples_column_index =
+        raw_preds_per_window.column_index("num_samples");
+    auto copy_per_row_class = [=](const sframe_rows::row& row) {
+      return flex_list(row[num_samples_column_index], row[class_column_index]);
+    };
+    auto copy_per_row_rank = [=](const sframe_rows::row& row) {
+      return flex_list(row[num_samples_column_index], row[rank_column_index]);
+    };
+    raw_preds_per_window["class"] =
+        raw_preds_per_window.apply(copy_per_row_class, flex_type_enum::LIST);
+    raw_preds_per_window["rank"] =
+        raw_preds_per_window.apply(copy_per_row_rank, flex_type_enum::LIST);
+  }
+
+  // construct the final result
+  gl_sframe result = gl_sframe();
+  if (output_frequency == "per_row") {
+    // stack data into a column with single element for each row
+    gl_sframe stacked_class =
+        gl_sframe({{"class", raw_preds_per_window["class"]}})
+            .stack("class", "class");
+    result.add_column(gl_sarray::from_sequence(0, stacked_class.size()),
+                      "row_id");
+    result.add_column(stacked_class["class"], "class");
+    result = result.stack("class", "class");
+    gl_sframe stacked_rank = gl_sframe({{"rank", raw_preds_per_window["rank"]}})
+                                 .stack("rank", "rank");
+    stacked_rank = stacked_rank.stack("rank", "rank");
+    result.add_column(stacked_rank["rank"], "rank");
+  } else {
+    // add "exp_id" and "prediction_id" if the output_frequency is per_window
+    result.add_column(raw_preds_per_window["session_id"], "exp_id");
+    result.add_column(gl_sarray::from_sequence(0, raw_preds_per_window.size()),
+                      "prediction_id");
+    result.add_column(raw_preds_per_window["class"], "class");
+    result = result.stack("class", "class");
+    gl_sframe rank_per_row = gl_sframe({{"rank", raw_preds_per_window["rank"]}})
+                                 .stack("rank", "rank");
+    result.add_column(rank_per_row["rank"], "rank");
+  }
+
+  // change the column name rank to probability according to the output_type
+  if (output_type == "probability") {
+    result.rename({{"rank", "probability"}});
+  }
   return result;
 }
 
@@ -520,9 +736,13 @@ void activity_classifier::import_from_custom_model(
     variant_map_type model_data, size_t version) {
 
   // Extract the neural net weights from the model data.
-  auto it = model_data.find("_pred_model");
-  flex_dict pred_model = variant_get_value<flex_dict>(it->second);
-  model_data.erase(it);
+  auto model_iter = model_data.find("_pred_model");
+  if (model_iter == model_data.end()) {
+    log_and_throw(
+        "The loaded turicreate model must contain '_pred_model' field!");
+  }
+  const flex_dict& pred_model =
+      variant_get_value<flex_dict>(model_iter->second);
 
   // The remaining model data should be interpreted as model attributes (state).
   state.clear();
@@ -607,8 +827,10 @@ void activity_classifier::import_from_custom_model(
   }
 
   // Load the migrated weights.
-  nn_spec_ = init_model();
+  bool use_random_init = false;
+  nn_spec_ = init_model(use_random_init);
   nn_spec_->update_params(nn_params);
+  model_data.erase(model_iter);
 }
 
 std::unique_ptr<data_iterator> activity_classifier::create_iterator(
@@ -632,18 +854,21 @@ std::unique_ptr<data_iterator> activity_classifier::create_iterator(
   data_params.prediction_window = read_state<flex_int>("prediction_window");
   data_params.predictions_in_chunk = NUM_PREDICTIONS_PER_CHUNK;
   data_params.use_data_augmentation = use_data_augmentation;
-  data_params.random_seed = read_state<int>("random_seed");
+  if (use_data_augmentation) {
+    data_params.random_seed = read_state<int>("random_seed");
+  } else {
+    data_params.random_seed = 0;
+  }
   return std::unique_ptr<data_iterator>(new simple_data_iterator(data_params));
 }
 
-std::unique_ptr<compute_context>
-activity_classifier::create_compute_context() const
-{
+std::unique_ptr<compute_context> activity_classifier::create_compute_context()
+    const {
   return compute_context::create();
 }
 
-std::unique_ptr<model_spec> activity_classifier::init_model() const
-{
+std::unique_ptr<model_spec> activity_classifier::init_model(
+    bool use_random_init) const {
   std::unique_ptr<model_spec> result(new model_spec);
 
   flex_string target = read_state<flex_string>("target");
@@ -652,66 +877,86 @@ std::unique_ptr<model_spec> activity_classifier::init_model() const
   size_t prediction_window = read_state<flex_int>("prediction_window");
   const flex_list &features_list = read_state<flex_list>("features");
 
-  // Initialize a random number generator for weight initialization.
-  std::seed_seq seed_seq = { read_state<int>("random_seed") };
-  std::mt19937 random_engine(seed_seq);
-
+  // Only to create a random engine for weight initialization if use_random_init
+  // = true
+  std::mt19937 random_engine;
+  if (use_random_init) {
+    std::seed_seq seed_seq{read_state<int>("random_seed")};
+    random_engine = std::mt19937(seed_seq);
+  }
   result->add_channel_concat(
       "features",
       std::vector<std::string>(features_list.begin(), features_list.end()));
   result->add_reshape("reshape", "features",
                       {{1, num_features, 1, prediction_window}});
+
+  weight_initializer initializer = zero_weight_initializer();
+  lstm_weight_initializers lstm_initializer =
+      lstm_weight_initializers::create_with_zero();
+
+  if (use_random_init) {
+    initializer = xavier_weight_initializer(
+        num_features * prediction_window, NUM_CONV_FILTERS * prediction_window,
+        &random_engine);
+  }
   result->add_convolution(
-      /* name */ "conv",
-      /* input */ "reshape",
+      /* name                */ "conv",
+      /* input               */ "reshape",
       /* num_output_channels */ NUM_CONV_FILTERS,
       /* num_kernel_channels */ num_features,
-      /* kernel_height */ 1,
-      /* kernel_width */ prediction_window,
-      /* stride_height */ 1,
-      /* stride_width */ prediction_window,
-      /* padding */ padding_type::VALID,
-      /* weight_init_fn */
-      xavier_weight_initializer(num_features * prediction_window,
-                                NUM_CONV_FILTERS * prediction_window,
-                                &random_engine),
-      /* bias_init_fn */ zero_weight_initializer());
+      /* kernel_height       */ 1,
+      /* kernel_width        */ prediction_window,
+      /* stride_height       */ 1,
+      /* stride_width        */ prediction_window,
+      /* padding             */ padding_type::VALID,
+      /* weight_init_fn      */ initializer,
+      /* bias_init_fn        */ zero_weight_initializer());
   result->add_relu("relu1", "conv");
 
   result->add_channel_slice("hiddenIn","stateIn",0,LSTM_HIDDEN_SIZE,1);
   result->add_channel_slice("cellIn","stateIn",LSTM_HIDDEN_SIZE,LSTM_HIDDEN_SIZE*2,1);
+
+  if (use_random_init) {
+    lstm_initializer = lstm_weight_initializers::create_with_xavier_method(
+        NUM_CONV_FILTERS, LSTM_HIDDEN_SIZE, &random_engine);
+  }
   result->add_lstm(
-      /* name */                "lstm",
-      /* input */               "relu1",
-      /* hidden_input */        "hiddenIn",
-      /* cell_input */          "cellIn",
-      /* hidden_output */       "hiddenOut",
-      /* cell_output */         "cellOut",
-      /* input_vector_size */   NUM_CONV_FILTERS,
-      /* output_vector_size */  LSTM_HIDDEN_SIZE,
+      /* name                */ "lstm",
+      /* input               */ "relu1",
+      /* hidden_input        */ "hiddenIn",
+      /* cell_input          */ "cellIn",
+      /* hidden_output       */ "hiddenOut",
+      /* cell_output         */ "cellOut",
+      /* input_vector_size   */ NUM_CONV_FILTERS,
+      /* output_vector_size  */ LSTM_HIDDEN_SIZE,
       /* cell_clip_threshold */ LSTM_CELL_CLIP_THRESHOLD,
-      /* initializers */  lstm_weight_initializers::create_with_xavier_method(
-          NUM_CONV_FILTERS, LSTM_HIDDEN_SIZE, &random_engine));
+      /* initializers        */ lstm_initializer);
   result->add_channel_concat("stateOut",{"hiddenOut","cellOut"});
+
+  if (use_random_init) {
+    initializer = xavier_weight_initializer(
+        LSTM_HIDDEN_SIZE, FULLY_CONNECTED_HIDDEN_SIZE, &random_engine);
+  }
   result->add_inner_product(
-      /* name */ "dense0",
-      /* input */ "lstm",
+      /* name                */ "dense0",
+      /* input               */ "lstm",
       /* num_output_channels */ FULLY_CONNECTED_HIDDEN_SIZE,
-      /* num_input_channels */ LSTM_HIDDEN_SIZE,
-      /* weight_init_fn */
-      xavier_weight_initializer(LSTM_HIDDEN_SIZE, FULLY_CONNECTED_HIDDEN_SIZE,
-                                &random_engine),
-      /* bias_init_fn */ zero_weight_initializer());
+      /* num_input_channels  */ LSTM_HIDDEN_SIZE,
+      /* weight_init_fn      */ initializer,
+      /* bias_init_fn        */ zero_weight_initializer());
   result->add_batchnorm("bn", "dense0", FULLY_CONNECTED_HIDDEN_SIZE, 0.001f);
   result->add_relu("relu6", "bn");
+
+  if (use_random_init) {
+    initializer = xavier_weight_initializer(FULLY_CONNECTED_HIDDEN_SIZE,
+                                            num_classes, &random_engine);
+  }
   result->add_inner_product(
-      /* name */                "dense1",
-      /* input */               "relu6",
+      /* name                */ "dense1",
+      /* input               */ "relu6",
       /* num_output_channels */ num_classes,
-      /* num_input_channels */  FULLY_CONNECTED_HIDDEN_SIZE,
-      /* weight_init_fn */      xavier_weight_initializer(
-          FULLY_CONNECTED_HIDDEN_SIZE, num_classes, &random_engine),
-      /* bias_init_fn */        zero_weight_initializer());
+      /* num_input_channels  */ FULLY_CONNECTED_HIDDEN_SIZE,
+      /* weight_init_fn      */ initializer);
   result->add_softmax(target + "Probability", "dense1");
 
   return result;
@@ -812,6 +1057,7 @@ void activity_classifier::init_train(
   } else {
     validation_data_iterator_ = nullptr;
   }
+
   // Instantiate the compute context.
   training_compute_context_ = create_compute_context();
   if (training_compute_context_ == nullptr) {
@@ -820,30 +1066,21 @@ void activity_classifier::init_train(
 
   // Report to the user what GPU(s) is being used.
   std::vector<std::string> gpu_names = training_compute_context_->gpu_names();
-  if (gpu_names.empty()) {
-    logprogress_stream << "Using CPU to create model";
-  } else {
-    std::string gpu_names_string = gpu_names[0];
-    for (size_t i = 1; i < gpu_names.size(); ++i) {
-      gpu_names_string += ", " + gpu_names[i];
-    }
-    logprogress_stream << "Using "
-                       << (gpu_names.size() > 1 ? "GPUs" : "GPU")
-                       << " to create model ("
-                       << gpu_names_string << ")";
-  }
+  print_training_device(gpu_names);
 
   // Set additional model fields.
   add_or_update_state({
       {"features", training_data_iterator_->feature_names()},
       {"num_classes", training_data_iterator_->class_labels().size()},
       {"num_features", training_data_iterator_->feature_names().size()},
+      {"num_sessions", training_data_iterator_->num_sessions()},
       {"training_iterations", 0},
   });
 
   // Initialize the neural net. Note that this depends on statistics computed by
   // the data iterator.
-  nn_spec_ = init_model();
+  bool use_random_init = true;
+  nn_spec_ = init_model(use_random_init);
 
   // Instantiate the NN backend.
   size_t samples_per_chunk =

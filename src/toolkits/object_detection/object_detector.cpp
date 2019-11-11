@@ -20,11 +20,13 @@
 #include <core/logging/assertions.hpp>
 #include <core/logging/logger.hpp>
 #include <core/random/random.hpp>
+#include <timer/timer.hpp>
 #include <toolkits/coreml_export/neural_net_models_exporter.hpp>
 #include <toolkits/object_detection/od_evaluation.hpp>
 #include <toolkits/object_detection/od_serialization.hpp>
 #include <toolkits/object_detection/od_yolo.hpp>
 #include <toolkits/supervised_learning/automatic_model_creation.hpp>
+#include <toolkits/util/training_utils.hpp>
 
 #ifdef __APPLE__
 
@@ -83,21 +85,15 @@ constexpr int NUM_INPUT_CHANNELS = 3;
 // TODO: When we support alternative base models, we will have to generalize.
 constexpr int SPATIAL_REDUCTION = 32;
 
-// For the MPS implementation of the darknet-yolo model, the loss must be scaled
-// up to avoid underflow in the fp16 gradient images. The learning rate is
-// correspondingly divided by the same multiple to make training mathematically
-// equivalent. The update is done in fp32, which is why this trick works. The
-// loss presented to the user is presented in the original scale.
-// TODO: Only apply this for MPS, once this code also supports MXNet.
-constexpr float MPS_LOSS_MULTIPLIER = 8;
-
-constexpr float BASE_LEARNING_RATE = 0.001f / MPS_LOSS_MULTIPLIER;
+constexpr float BASE_LEARNING_RATE = 0.001f;
 
 constexpr float DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD = 0.45f;
 
-// Predictions with confidence scores below this threshold will be discarded
+constexpr float DEFAULT_CONFIDENCE_THRESHOLD_PREDICT = 0.25f;
+
+constexpr float DEFAULT_CONFIDENCE_THRESHOLD_EVALUATE = 0.001f;
+
 // before generation precision-recall curves.
-constexpr float EVAL_CONFIDENCE_THRESHOLD = 0.001f;
 
 // Each bounding box is evaluated relative to a list of pre-defined sizes.
 const std::vector<std::pair<float, float>>& anchor_boxes() {
@@ -116,35 +112,43 @@ const std::vector<std::pair<float, float>>& anchor_boxes() {
 // into TCMPS.
 // TODO: These should be exposed in a way that facilitates experimentation.
 // TODO: A struct instead of a map would be nice, too.
-float_array_map get_training_config() {
+
+float_array_map get_base_config() {
   float_array_map config;
-  config["gradient_clipping"]        =
-      shared_float_array::wrap(0.025f * MPS_LOSS_MULTIPLIER);
   config["learning_rate"]            =
       shared_float_array::wrap(BASE_LEARNING_RATE);
+  config["gradient_clipping"]        = shared_float_array::wrap(0.025f);
+  // TODO: Have MPS path use these parameters, instead
+  // of the values hardcoded in the MPS code.
+  config["od_rescore"]               = shared_float_array::wrap(1.0f);
+  config["lmb_noobj"]                = shared_float_array::wrap(5.0);
+  config["lmb_obj"]                  = shared_float_array::wrap(100.0);
+  config["lmb_coord_xy"]             = shared_float_array::wrap(10.0);
+  config["lmb_coord_wh"]             = shared_float_array::wrap(10.0);
+  config["lmb_class"]                = shared_float_array::wrap(2.0);
+  return config;
+}
+
+float_array_map get_training_config() {
+  float_array_map config = get_base_config();
   config["mode"]                     = shared_float_array::wrap(0.f);
   config["od_include_loss"]          = shared_float_array::wrap(1.0f);
   config["od_include_network"]       = shared_float_array::wrap(1.0f);
   config["od_max_iou_for_no_object"] = shared_float_array::wrap(0.3f);
   config["od_min_iou_for_object"]    = shared_float_array::wrap(0.7f);
-  config["od_rescore"]               = shared_float_array::wrap(1.0f);
-  config["od_scale_class"]           =
-      shared_float_array::wrap(2.0f * MPS_LOSS_MULTIPLIER);
-  config["od_scale_no_object"]       =
-      shared_float_array::wrap(5.0f * MPS_LOSS_MULTIPLIER);
-  config["od_scale_object"]          =
-      shared_float_array::wrap(100.0f * MPS_LOSS_MULTIPLIER);
-  config["od_scale_wh"]              =
-      shared_float_array::wrap(10.0f * MPS_LOSS_MULTIPLIER);
-  config["od_scale_xy"]              =
-      shared_float_array::wrap(10.0f * MPS_LOSS_MULTIPLIER);
+  config["rescore"]                  = shared_float_array::wrap(1.0f);
+  config["od_scale_class"]           = shared_float_array::wrap(2.0f);
+  config["od_scale_no_object"]       = shared_float_array::wrap(5.0f);
+  config["od_scale_object"]          = shared_float_array::wrap(100.0f);
+  config["od_scale_wh"]              = shared_float_array::wrap(10.0f);
+  config["od_scale_xy"]              = shared_float_array::wrap(10.0f);
   config["use_sgd"]                  = shared_float_array::wrap(1.0f);
   config["weight_decay"]             = shared_float_array::wrap(0.0005f);
   return config;
 }
 
 float_array_map get_prediction_config() {
-  float_array_map config;
+  float_array_map config = get_base_config();
   config["mode"]                     = shared_float_array::wrap(2.0f);
   config["od_include_loss"]          = shared_float_array::wrap(0.0f);
   config["od_include_network"]       = shared_float_array::wrap(1.0f);
@@ -265,6 +269,12 @@ void object_detector::init_options(
       /* default_value     */ "center",
       /* allowed_values    */ {flexible_type("center"), flexible_type("top_left"), flexible_type("bottom_left")},
       /* allowed_overwrite */ false);
+  options.create_flexible_type_option(
+      /* name              */ "classes",
+      /* description       */
+      "Defines class labels.",
+      /* default_value     */ flex_list(),
+      /* allowed_overwrite */ false);
 
   // Validate user-provided options.
   options.set_options(opts);
@@ -276,18 +286,7 @@ void object_detector::init_options(
 void object_detector::infer_derived_options() {
   // Report to the user what GPU(s) is being used.
   std::vector<std::string> gpu_names = training_compute_context_->gpu_names();
-  if (gpu_names.empty()) {
-    logprogress_stream << "Using CPU to create model";
-  } else {
-    std::string gpu_names_string = gpu_names[0];
-    for (size_t i = 1; i < gpu_names.size(); ++i) {
-      gpu_names_string += ", " + gpu_names[i];
-    }
-    logprogress_stream << "Using "
-                       << (gpu_names.size() > 1 ? "GPUs" : "GPU")
-                       << " to create model ("
-                       << gpu_names_string << ")";
-  }
+  print_training_device(gpu_names);
 
   // Configure the batch size automatically if not set.
   if (read_state<flexible_type>("batch_size") == FLEX_UNDEFINED) {
@@ -324,6 +323,10 @@ size_t object_detector::get_version() const {
 }
 
 void object_detector::save_impl(oarchive& oarc) const {
+  if (training_model_) {
+    // If checkpointing during training, first copy weights from the backend.
+    synchronize_model(nn_spec_.get());
+  }
   _save_impl(oarc, *nn_spec_, state);
 }
 
@@ -332,34 +335,112 @@ void object_detector::load_version(iarchive& iarc, size_t version) {
   _load_version(iarc, version, *nn_spec_, state, anchor_boxes());
 }
 
+void object_detector::import_from_custom_model(variant_map_type model_data,
+                                               size_t version) {
+  auto model_iter = model_data.find("_model");
+  if (model_iter == model_data.end()) {
+    log_and_throw("The loaded turicreate model must contain '_model'!\n");
+  }
+  const flex_dict& model = variant_get_value<flex_dict>(model_iter->second);
+  auto shape_iter = model_data.find("_grid_shape");
+  size_t height, width;
+  if (shape_iter == model_data.end()) {
+    height = 13;
+    width = 13;
+  } else {
+    std::vector<size_t> shape =
+        variant_get_value<std::vector<size_t>>(shape_iter->second);
+    height = shape[0];
+    width = shape[1];
+  }
+  model_data.emplace("grid_height", height);
+  model_data.emplace("grid_width", width);
+
+  model_data.emplace("annotation_scale", "pixel");
+  model_data.emplace("annotation_origin", "top_left");
+  model_data.emplace("annotation_position", "center");
+
+  state.clear();
+  state.insert(model_data.begin(), model_data.end());
+
+  flex_dict mxnet_data_dict;
+  flex_dict mxnet_shape_dict;
+
+  for (const auto& data : model) {
+    if (data.first == "data") {
+      mxnet_data_dict = data.second;
+    }
+    if (data.first == "shapes") {
+      mxnet_shape_dict = data.second;
+    }
+  }
+
+  auto cmp = [](const flex_dict::value_type& a, const flex_dict::value_type& b) {
+    return (a.first < b.first);
+  };
+
+  std::sort(mxnet_data_dict.begin(), mxnet_data_dict.end(), cmp);
+  std::sort(mxnet_shape_dict.begin(), mxnet_shape_dict.end(), cmp);
+
+  float_array_map nn_params;
+
+  for (size_t i = 0; i < mxnet_data_dict.size(); i++) {
+    std::string layer_name = mxnet_data_dict[i].first;
+    flex_nd_vec mxnet_data_nd = mxnet_data_dict[i].second.to<flex_nd_vec>();
+    flex_nd_vec mxnet_shape_nd = mxnet_shape_dict[i].second.to<flex_nd_vec>();
+    const std::vector<double>& model_weight = mxnet_data_nd.elements();
+    const std::vector<double>& model_shape = mxnet_shape_nd.elements();
+    std::vector<float> layer_weight(model_weight.begin(), model_weight.end());
+    std::vector<size_t> layer_shape(model_shape.begin(), model_shape.end());
+    size_t index = layer_name.find('_');
+    layer_name =
+        layer_name.substr(0, index) + "_fwd_" + layer_name.substr(index + 1);
+    nn_params[layer_name] = shared_float_array::wrap(std::move(layer_weight),
+                                                     std::move(layer_shape));
+  }
+  nn_spec_.reset(new model_spec);
+  init_darknet_yolo(*nn_spec_,
+                    variant_get_value<size_t>(state.at("num_classes")),
+                    anchor_boxes());
+  nn_spec_->update_params(nn_params);
+  model_data.erase(model_iter);
+  return;
+}
+
 void object_detector::train(gl_sframe data,
                             std::string annotations_column_name,
                             std::string image_column_name,
                             variant_type validation_data,
                             std::map<std::string, flexible_type> opts)
 {
-  // Begin printing progress.
-  // TODO: Make progress printing optional.
-  training_table_printer_.reset(new table_printer(
-      {{ "Iteration", 12}, {"Loss", 12}, {"Elapsed Time", 12}}));
-
+  auto compute_final_metrics_iter = opts.find("compute_final_metrics");
+  bool compute_final_metrics = true;
+  if (compute_final_metrics_iter != opts.end()) {
+    compute_final_metrics = compute_final_metrics_iter->second;
+  }
+  opts.erase(compute_final_metrics_iter);
   // Instantiate the training dependencies: data iterator, image augmenter,
   // backend NN model.
-  init_train(data, annotations_column_name, image_column_name, validation_data,
-             opts);
+  init_training(data, annotations_column_name, image_column_name,
+                validation_data, opts);
+
+  turi::timer time_object;
+  time_object.start();
 
   // Perform all the iterations at once.
   while (get_training_iterations() < get_max_iterations()) {
-    perform_training_iteration();
+    iterate_training();
   }
 
   // Wait for any outstanding batches to finish.
-  wait_for_training_batches();
+  finalize_training(compute_final_metrics);
 
-  // Finish printing progress.
-  training_table_printer_->print_footer();
-  training_table_printer_.reset();
+  add_or_update_state({
+      {"training_time", time_object.current_time()},
+  });
+}
 
+void object_detector::synchronize_model(model_spec* nn_spec) const {
   // Sync trained weights to our local storage of the NN weights.
   float_array_map raw_trained_weights = training_model_->export_weights();
   float_array_map trained_weights;
@@ -372,14 +453,58 @@ void object_detector::train(gl_sframe data,
     key.insert(it, modifier.begin(), modifier.end());
     trained_weights[key] = kv.second;
   }
-  nn_spec_->update_params(trained_weights);
-
-  // Compute training and validation metrics.
-  update_model_metrics(training_data_, validation_data_);
+  nn_spec->update_params(trained_weights);
 }
 
-variant_map_type object_detector::evaluate(
-    gl_sframe data, std::string metric) {
+void object_detector::finalize_training(bool compute_final_metrics) {
+  // Wait for any outstanding batches.
+  synchronize_training();
+
+  // Finish printing progress.
+  if (training_table_printer_) {
+    training_table_printer_->print_footer();
+    training_table_printer_.reset();
+  }
+
+  // Copy out the trained mdoel.
+  synchronize_model(nn_spec_.get());
+
+  // Tear down the training backend.
+  training_model_.reset();
+  training_data_augmenter_.reset();
+  training_data_iterator_.reset();
+  training_compute_context_.reset();
+
+  // Compute training and validation metrics.
+  if (compute_final_metrics) {
+    update_model_metrics(training_data_, validation_data_);
+  }
+}
+
+variant_type object_detector::evaluate(gl_sframe data, std::string metric,
+                                       std::string output_type,
+                                       std::map<std::string, flexible_type> opts) {
+  // check if data has ground truth annotation
+  std::string annotations_column_name = read_state<flex_string>("annotations");
+  if (!data.contains_column(annotations_column_name)) {
+    log_and_throw("Annotations column " + annotations_column_name +
+                  " does not exist");
+  }
+
+  //parse input opts
+  float confidence_threshold, iou_threshold;
+  auto it_confidence = opts.find("confidence_threshold");
+  if (it_confidence == opts.end()){
+    confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD_EVALUATE;
+  } else {
+    confidence_threshold = opts["confidence_threshold"];
+  }
+  auto it_iou = opts.find("iou_threshold");
+  if (it_iou == opts.end()){
+    iou_threshold = DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD;
+  } else {
+    iou_threshold = opts["iou_threshold"];
+  }
 
   std::vector<std::string> metrics;
   static constexpr char AP[] = "average_precision";
@@ -399,7 +524,6 @@ variant_map_type object_detector::evaluate(
   }
 
   flex_list class_labels = read_state<flex_list>("classes");
-
   // Initialize the metric calculator
   average_precision_calculator calculator(class_labels);
 
@@ -408,7 +532,7 @@ variant_map_type object_detector::evaluate(
     calculator.add_row(predicted_row, groundtruth_row);
   };
 
-  perform_predict(data, consumer);
+  perform_predict(data, consumer, confidence_threshold, iou_threshold);
 
   // Compute the average precision (area under the precision-recall curve) for
   // each combination of IOU threshold and class label.
@@ -429,45 +553,141 @@ variant_map_type object_detector::evaluate(
     result_map.erase(MAP);
   }
 
-  return result_map;
+  return convert_map_to_types(result_map, output_type);
 }
 
-gl_sarray object_detector::predict(gl_sframe data) {
+variant_type object_detector::convert_map_to_types(
+    const variant_map_type& result_map, const std::string& output_type) {
+  // Handle different output types here
+  // If output_type = "dict", just return the result_map.
+  // If output_type = "sframe", construct a sframe,
+  // whose rows indicate class labels, and columns denote different metric
+  // scores. Note that the "sframe" output only shows AP or AP50.
+
+  variant_type final_result;
+  std::string AP = "average_precision";
+  std::string AP50 = "average_precision_50";
+
+  if (output_type == "dict") {
+    final_result = to_variant(result_map);
+  } else if (output_type == "sframe") {
+    gl_sframe sframe_result;
+    auto add_score_list = [&](std::string& metric_name) {
+      flex_list score_list;
+      flex_list label_list;
+      auto it = result_map.find(metric_name);
+      if (it != result_map.end()) {
+        const flex_dict& dict = variant_get_value<flex_dict>(it->second);
+        for (const auto& label_score_pair : dict) {
+          label_list.push_back(label_score_pair.first);
+          score_list.push_back(label_score_pair.second);
+        }
+        sframe_result.replace_add_column(gl_sarray(label_list), "label");
+        sframe_result.add_column(gl_sarray(score_list), metric_name);
+      }
+    };
+    add_score_list(AP);
+    add_score_list(AP50);
+    final_result = to_variant(sframe_result);
+  } else {
+    log_and_throw(
+        "Invalid 'output_type' argument! Only 'dict' and 'sframe' are "
+        "accepted.");
+  }
+
+  return final_result;
+}
+
+variant_type object_detector::predict(
+    variant_type data, std::map<std::string, flexible_type> opts) {
   gl_sarray_writer result(flex_type_enum::LIST, 1);
 
   auto consumer = [&](const std::vector<image_annotation>& predicted_row,
                       const std::vector<image_annotation>& groundtruth_row) {
+
     // Convert predicted_row to flex_type list to call gl_sarray_writer
     flex_list predicted_row_ft;
     for (const image_annotation& each_row : predicted_row) {
       flex_dict bb_dict = {{"x", each_row.bounding_box.x}, {"y", each_row.bounding_box.y},
                       {"width", each_row.bounding_box.width},
                       {"height", each_row.bounding_box.height}};
-      flex_dict each_annotation = {{"confidence", each_row.confidence},
-                                   {"bounding_box", std::move(bb_dict)},
-                                   {"identifier", each_row.identifier}};
+      flex_dict each_annotation = {{"identifier", each_row.identifier},
+                                   {"type", "rectangle"},
+                                   {"coordinates", std::move(bb_dict)},
+                                   {"confidence", each_row.confidence}
+                                   };
       predicted_row_ft.push_back(std::move(each_annotation));
     }
     result.write(predicted_row_ft, 0);
   };
+  // Parse input options
+  float confidence_threshold, iou_threshold;
+  auto it_confidence = opts.find("confidence_threshold");
+  if (it_confidence == opts.end()){
+    confidence_threshold = DEFAULT_CONFIDENCE_THRESHOLD_PREDICT;
+  } else {
+    confidence_threshold = opts["confidence_threshold"];
+  }
+  auto it_iou = opts.find("iou_threshold");
+  if (it_iou == opts.end()){
+    iou_threshold = DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD;
+  } else {
+    iou_threshold = opts["iou_threshold"];
+  }
 
-  perform_predict(data, consumer);
+  // Convert data to SFrame
+  std::string image_column_name = read_state<flex_string>("feature");
+  gl_sframe sframe_data = convert_types_to_sframe(data, image_column_name);
 
-  return result.close();
+  perform_predict(sframe_data, consumer, confidence_threshold, iou_threshold);
+
+  // Convert output to flex_list if data is a single image
+  gl_sarray result_sarray = result.close();
+  variant_type final_result;
+  if (variant_is<gl_sframe>(data) || variant_is<gl_sarray>(data)) {
+    final_result = to_variant(result_sarray);
+  } else {
+    final_result = to_variant(result_sarray[0]);
+  }
+  return final_result;
+}
+
+gl_sframe object_detector::convert_types_to_sframe(
+    const variant_type& data, const std::string& column_name) {
+  // Data input can be either sframe, sarray, or a single image
+  // If they are sarray or image, create a sframe with a single column.
+  gl_sframe sframe_data;
+  if (variant_is<gl_sframe>(data)) {
+    sframe_data = variant_get_value<gl_sframe>(data);
+  } else if (variant_is<flexible_type>(data)) {
+    flexible_type image_data = variant_get_value<flexible_type>(data);
+    std::vector<flexible_type> image_vector {image_data};
+    std::map<std::string, std::vector<flexible_type>> image_map = {
+        {column_name, image_vector}};
+    sframe_data = gl_sframe(image_map);
+  } else if (variant_is<gl_sarray>(data)){
+    gl_sarray sarray_data = variant_get_value<gl_sarray>(data);
+    std::map<std::string, gl_sarray> sarray_map = {{column_name, sarray_data}};
+    sframe_data = gl_sframe(sarray_map);
+  } else {
+    log_and_throw("Invalid data type for predict()! Expect Sframe, Sarray, or flexible_type!");
+  }
+  return sframe_data;
 }
 
 void object_detector::perform_predict(gl_sframe data,
     std::function<void(const std::vector<image_annotation>&,
-    const std::vector<image_annotation>&)> consumer) {
-
+    const std::vector<image_annotation>&)> consumer, float confidence_threshold,
+    float iou_threshold) {
   std::string image_column_name = read_state<flex_string>("feature");
   std::string annotations_column_name = read_state<flex_string>("annotations");
   flex_list class_labels = read_state<flex_list>("classes");
   size_t batch_size = read_state<size_t>("batch_size");
   size_t grid_height = read_state<size_t>("grid_height");
   size_t grid_width = read_state<size_t>("grid_width");
-  float iou_threshold =
-      read_state<flex_float>("non_maximum_suppression_threshold");
+
+  // return if the data is empty
+  if (data.size() == 0) return;
 
   // Bind the data to a data iterator.
   std::unique_ptr<data_iterator> data_iter = create_iterator(
@@ -493,6 +713,13 @@ void object_detector::perform_predict(gl_sframe data,
   // For each anchor box, we have 4 bbox coords + 1 conf + one-hot class labels
   int num_outputs_per_anchor = 5 + static_cast<int>(class_labels.size());
   int num_output_channels = num_outputs_per_anchor * anchor_boxes().size();
+
+  float_array_map pred_config = get_prediction_config();
+  pred_config["num_iterations"] =
+      shared_float_array::wrap(get_max_iterations());
+  pred_config["num_classes"] =
+      shared_float_array::wrap(get_num_classes());
+
   std::unique_ptr<model_backend> model = ctx->create_object_detector(
       /* n       */ read_state<int>("batch_size"),
       /* c_in    */ NUM_INPUT_CHANNELS,
@@ -501,7 +728,7 @@ void object_detector::perform_predict(gl_sframe data,
       /* c_out   */ num_output_channels,
       /* h_out   */ grid_height,
       /* w_out   */ grid_width,
-      /* config  */ get_prediction_config(),
+      /* config  */ pred_config,
       /* weights */ get_model_params());
 
   // To support double buffering, use a queue of pending inference results.
@@ -510,10 +737,10 @@ void object_detector::perform_predict(gl_sframe data,
   // Helper function to process results until the queue reaches a given size.
   auto pop_until_size = [&](size_t remaining) {
     while (pending_batches.size() > remaining) {
+
       // Pop one batch from the queue.
       image_augmenter::result batch = pending_batches.front();
       pending_batches.pop();
-
       for (size_t i = 0; i < batch.annotations_batch.size(); ++i) {
         // For this row (corresponding to one image), extract the prediction.
         shared_float_array raw_prediction = batch.image_batch[i];
@@ -521,7 +748,7 @@ void object_detector::perform_predict(gl_sframe data,
         // Translate the raw output into predicted labels and bounding boxes.
         std::vector<image_annotation> predicted_annotations =
             convert_yolo_to_annotations(raw_prediction, anchor_boxes(),
-                                        EVAL_CONFIDENCE_THRESHOLD);
+                                        confidence_threshold);
 
         // Remove overlapping predictions.
         predicted_annotations = apply_non_maximum_suppression(
@@ -554,8 +781,10 @@ void object_detector::perform_predict(gl_sframe data,
     // submit them to the neural net.
     image_augmenter::result prepared_input_batch =
         augmenter->prepare_images(std::move(input_batch));
+
     std::map<std::string, shared_float_array> prediction_results =
         model->predict({{"input", prepared_input_batch.image_batch}});
+
     result_batch.image_batch = prediction_results.at("output");
 
     // Add the pending result to our queue and move on to the next input batch.
@@ -570,9 +799,14 @@ void object_detector::perform_predict(gl_sframe data,
 // TODO: Should accept model_backend as an optional argument to avoid
 // instantiating a new backend during training. Or just check to see if an
 // existing backend is available?
-variant_map_type object_detector::perform_evaluation(gl_sframe data,
-                                                     std::string metric) {
-  return evaluate(data, metric);
+variant_type object_detector::perform_evaluation(gl_sframe data,
+                                                 std::string metric,
+                                                 std::string output_type,
+                                                 float confidence_threshold,
+                                                 float iou_threshold) {
+  std::map<std::string, flexible_type> opts{{"confidence_threshold", confidence_threshold},
+{"iou_threshold", iou_threshold}};
+  return evaluate(data, metric, output_type, opts);
 }
 
 std::vector<neural_net::image_annotation>
@@ -585,8 +819,7 @@ object_detector::convert_yolo_to_annotations(
 }
 
 std::unique_ptr<model_spec> object_detector::init_model(
-    const std::string& pretrained_mlmodel_path) const {
-
+    const std::string& pretrained_mlmodel_path, size_t num_classes) const {
   // All of this presumes that the pre-trained model is the darknet model from
   // our first object detector implementation....
 
@@ -634,7 +867,6 @@ std::unique_ptr<model_spec> object_detector::init_model(
 
   // Append conv8.
   static constexpr float CONV8_MAGNITUDE = 0.00005f;
-  const size_t num_classes = training_data_iterator_->class_labels().size();
   const size_t num_predictions = 5 + num_classes;  // Per anchor box
   const size_t conv8_c_out = anchor_boxes().size() * num_predictions;
   auto conv8_weight_init_fn = [&random_engine](float* w, float* w_end) {
@@ -671,6 +903,11 @@ std::unique_ptr<model_spec> object_detector::init_model(
 
 std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
     std::string filename, std::map<std::string, flexible_type> opts) {
+  // If called during training, synchronize the model first.
+  if (training_model_) {
+    synchronize_training();
+    synchronize_model(nn_spec_.get());
+  }
 
   // Initialize the result with the learned layers from the model_backend.
   model_spec yolo_nn_spec(nn_spec_->get_coreml_spec());
@@ -691,10 +928,10 @@ std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
     confidence_str = "raw_confidence";
     //Set default values if thresholds not provided.
     if (opts.find("iou_threshold") == opts.end()) {
-      opts["iou_threshold"] = 0.45;
+      opts["iou_threshold"] = DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD;
     }
     if (opts.find("confidence_threshold") == opts.end()) {
-      opts["confidence_threshold"] = 0.25;
+      opts["confidence_threshold"] = DEFAULT_CONFIDENCE_THRESHOLD_PREDICT;
     }
   }
 
@@ -740,7 +977,7 @@ std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
       grid_height * SPATIAL_REDUCTION, class_labels.size(),
       grid_height * grid_width * anchor_boxes().size(),
       std::move(user_defined_metadata), std::move(class_labels),
-      std::move(opts));
+      read_state<flex_string>("feature"), std::move(opts));
 
   if (!filename.empty()) {
     model_wrapper->save(filename);
@@ -752,10 +989,16 @@ std::shared_ptr<MLModelWrapper> object_detector::export_to_coreml(
 std::unique_ptr<data_iterator> object_detector::create_iterator(
     gl_sframe data, std::vector<std::string> class_labels, bool repeat) const
 {
+
   data_iterator::parameters iterator_params;
+
+  // Check if data has annotations column
+  std::string annotations_column_name = read_state<flex_string>("annotations");
+  if (data.contains_column(annotations_column_name)) {
+    iterator_params.annotations_column_name = annotations_column_name;
+  }
+
   iterator_params.data = std::move(data);
-  iterator_params.annotations_column_name =
-      read_state<flex_string>("annotations");
   iterator_params.image_column_name = read_state<flex_string>("feature");
   iterator_params.class_labels = std::move(class_labels);
   iterator_params.repeat = repeat;
@@ -806,11 +1049,11 @@ std::unique_ptr<compute_context> object_detector::create_compute_context() const
   return compute_context::create();
 }
 
-void object_detector::init_train(
-    gl_sframe data, std::string annotations_column_name,
-    std::string image_column_name, variant_type validation_data,
-    std::map<std::string, flexible_type> opts)
-{
+void object_detector::init_training(gl_sframe data,
+                                    std::string annotations_column_name,
+                                    std::string image_column_name,
+                                    variant_type validation_data,
+                                    std::map<std::string, flexible_type> opts) {
   // Extract 'mlmodel_path' from the options, to avoid storing it as a model
   // field.
   auto mlmodel_path_iter = opts.find("mlmodel_path");
@@ -830,11 +1073,6 @@ void object_detector::init_train(
     add_or_update_state({{"random_seed", random_seed}});
   }
 
-  // Perform random validation split if necessary.
-  std::tie(training_data_, validation_data_) =
-      supervised::create_validation_data(data, validation_data,
-                                         read_state<int>("random_seed"));
-
   // Record the relevant column names upfront, for use in create_iterator. Also
   // values fixed by this version of the toolkit.
   add_or_update_state({
@@ -845,9 +1083,23 @@ void object_detector::init_train(
         DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD },
   });
 
+  // Perform random validation split if necessary.
+  std::tie(training_data_, validation_data_) =
+      supervised::create_validation_data(data, validation_data,
+                                         read_state<int>("random_seed"));
+
   // Bind the data to a data iterator.
-  training_data_iterator_ = create_iterator(
-      training_data_, /* expected class_labels */ {}, /* repeat */ true);
+  std::vector<std::string> class_labels =
+      read_state<std::vector<std::string>>("classes");
+  training_data_iterator_ =
+      create_iterator(training_data_, /* expected class_labels */ class_labels,
+                      /* repeat */ true);
+
+  // Load the pre-trained model from the provided path. The final layers are
+  // initialized randomly using the random seed above, using the number of
+  // classes observed by the training_data_iterator_ above.
+  nn_spec_ =
+      init_model(mlmodel_path, training_data_iterator_->class_labels().size());
 
   // Instantiate the compute context.
   training_compute_context_ = create_compute_context();
@@ -858,11 +1110,6 @@ void object_detector::init_train(
   // Infer values for unspecified options. Note that this depends on training
   // data statistics and the compute context, initialized above.
   infer_derived_options();
-
-  // Load the pre-trained model from the provided path. The final layers are
-  // initialized randomly using the random seed above, using the number of
-  // classes observed by the training_data_iterator_ above.
-  nn_spec_ = init_model(mlmodel_path);
 
   // Set additional model fields.
   flex_int grid_height = read_state<flex_int>("grid_height");
@@ -877,14 +1124,43 @@ void object_detector::init_train(
        flex_list(input_image_shape.begin(), input_image_shape.end())},
       {"num_bounding_boxes", training_data_iterator_->num_instances()},
       {"num_classes", training_data_iterator_->class_labels().size()},
-      {"num_examples", data.size()},
+      {"num_examples", training_data_.size()},
       {"training_epochs", 0},
       {"training_iterations", 0},
   });
   // TODO: The original Python implementation also exposed "anchors",
   // "non_maximum_suppression_threshold", and "training_time".
 
+  init_training_backend();
+}
+
+void object_detector::resume_training(gl_sframe data,
+                                      variant_type validation_data) {
+  // Perform random validation split if necessary.
+  std::tie(training_data_, validation_data_) =
+      supervised::create_validation_data(data, validation_data,
+                                         read_state<int>("random_seed"));
+
+  // Bind the data to a data iterator.
+  flex_list class_labels = read_state<flex_list>("classes");
+  training_data_iterator_ = create_iterator(
+      training_data_,
+      std::vector<std::string>(class_labels.begin(), class_labels.end()),
+      /* repeat */ true);
+
+  // Instantiate the compute context.
+  training_compute_context_ = create_compute_context();
+  if (training_compute_context_ == nullptr) {
+    log_and_throw("No neural network compute context provided");
+  }
+
+  init_training_backend();
+}
+
+void object_detector::init_training_backend() {
   // Instantiate the data augmenter.
+  flex_int grid_height = read_state<flex_int>("grid_height");
+  flex_int grid_width = read_state<flex_int>("grid_width");
   training_data_augmenter_ = training_compute_context_->create_image_augmenter(
       get_augmentation_options(read_state<flex_int>("batch_size"), grid_height,
                                grid_width));
@@ -893,6 +1169,13 @@ void object_detector::init_train(
   int num_outputs_per_anchor =  // 4 bbox coords + 1 conf + one-hot class labels
       5 + static_cast<int>(training_data_iterator_->class_labels().size());
   int num_output_channels = num_outputs_per_anchor * anchor_boxes().size();
+
+  float_array_map train_config = get_training_config();
+  train_config["num_iterations"] =
+      shared_float_array::wrap(get_max_iterations());
+  train_config["num_classes"] =
+      shared_float_array::wrap(get_num_classes());
+
   training_model_ = training_compute_context_->create_object_detector(
       /* n       */ read_state<int>("batch_size"),
       /* c_in    */ NUM_INPUT_CHANNELS,
@@ -901,16 +1184,17 @@ void object_detector::init_train(
       /* c_out   */ num_output_channels,
       /* h_out   */ grid_height,
       /* w_out   */ grid_width,
-      /* config  */ get_training_config(),
+      /* config  */ train_config,
       /* weights */ get_model_params());
 
-  // Print the header last, after any logging triggered by initialization above.
-  if (training_table_printer_) {
-    training_table_printer_->print_header();
-  }
+  // Begin printing progress, after any logging triggered above.
+  // TODO: Make progress printing optional.
+  training_table_printer_.reset(new table_printer(
+      {{"Iteration", 12}, {"Loss", 12}, {"Elapsed Time", 12}}));
+  training_table_printer_->print_header();
 }
 
-void object_detector::perform_training_iteration() {
+void object_detector::iterate_training() {
   // Training must have been initialized.
   ASSERT_TRUE(training_data_iterator_ != nullptr);
   ASSERT_TRUE(training_data_augmenter_ != nullptr);
@@ -924,6 +1208,7 @@ void object_detector::perform_training_iteration() {
   // TODO: Abstract out the learning rate schedule.
   flex_int iteration_idx = get_training_iterations();
   flex_int max_iterations = get_max_iterations();
+
   if (iteration_idx == max_iterations / 2) {
 
     training_model_->set_learning_rate(BASE_LEARNING_RATE / 10.f);
@@ -968,6 +1253,8 @@ void object_detector::perform_training_iteration() {
   // completion of this batch.
   pending_training_batches_.emplace(iteration_idx, std::move(loss_batch));
 }
+
+void object_detector::synchronize_training() { wait_for_training_batches(); }
 
 float_array_map object_detector::get_model_params() const {
 
@@ -1031,6 +1318,10 @@ flex_int object_detector::get_training_iterations() const {
   return read_state<flex_int>("training_iterations");
 }
 
+flex_int object_detector::get_num_classes() const {
+  return read_state<flex_int>("num_classes");
+}
+
 void object_detector::wait_for_training_batches(size_t max_pending) {
 
   while (pending_training_batches_.size() > max_pending) {
@@ -1045,7 +1336,6 @@ void object_detector::wait_for_training_batches(size_t max_pending) {
     float batch_loss = std::accumulate(
         loss_batch.data(), loss_batch.data() + loss_batch.size(), 0.f,
         [](float a, float b) { return a + b; });
-    batch_loss /= MPS_LOSS_MULTIPLIER;
 
     // Update our rolling average (smoothed) loss.
     auto loss_it = state.find("training_loss");
@@ -1071,15 +1361,22 @@ void object_detector::update_model_metrics(gl_sframe data,
   std::map<std::string, variant_type> metrics;
 
   // Compute training metrics.
-  variant_map_type training_metrics = perform_evaluation(data, "all");
+  variant_type training_metrics_raw =
+      perform_evaluation(data, "all", "dict", DEFAULT_CONFIDENCE_THRESHOLD_EVALUATE,
+        DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD);
+  variant_map_type training_metrics =
+      variant_get_value<variant_map_type>(training_metrics_raw);
   for (const auto& kv : training_metrics) {
     metrics["training_" + kv.first] = kv.second;
   }
 
   // Compute validation metrics if necessary.
   if (!validation_data.empty()) {
-    variant_map_type validation_metrics = perform_evaluation(validation_data,
-                                                             "all");
+    variant_type validation_metrics_raw =
+        perform_evaluation(validation_data, "all", "dict", DEFAULT_CONFIDENCE_THRESHOLD_EVALUATE,
+         DEFAULT_NON_MAXIMUM_SUPPRESSION_THRESHOLD);
+    variant_map_type validation_metrics =
+        variant_get_value<variant_map_type>(validation_metrics_raw);
     for (const auto& kv : validation_metrics) {
       metrics["validation_" + kv.first] = kv.second;
     }

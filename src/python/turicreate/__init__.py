@@ -97,9 +97,6 @@ from turicreate.toolkits._model import load_model
 
 ################### Extension Importing ########################
 import turicreate.extensions
-from turicreate.extensions import ext_import
-
-turicreate.extensions._add_meta_path()
 
 # rewrite the extensions module
 class _extensions_wrapper(object):

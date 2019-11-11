@@ -11,6 +11,7 @@ from __future__ import absolute_import as _
 from ..data_structures.sarray import SArray
 from ..data_structures.sframe import SFrame
 from ..data_structures.sarray import load_sarray
+from ..toolkits.image_analysis.image_analysis import load_images
 from .._cython.cy_flexible_type import GMT
 from . import util
 
@@ -30,6 +31,7 @@ import functools
 import tempfile
 import sys
 import six
+import json
 
 
 class SArrayTest(unittest.TestCase):
@@ -48,6 +50,8 @@ class SArrayTest(unittest.TestCase):
         self.np_matrix_data = [np.matrix(x) for x in self.vec_data]
         self.list_data = [[i, str(i), i * 1.0] for i in self.int_data]
         self.dict_data =  [{str(i): i, i : float(i)} for i in self.int_data]
+        # json dict only allows string keys
+        self.dict_json_data =  [{str(i): i} for i in self.int_data]
         self.url = "http://s3-us-west-2.amazonaws.com/testdatasets/a_to_z.txt.gz"
 
     def __test_equal(self, _sarray, _data, _type):
@@ -383,6 +387,36 @@ class SArrayTest(unittest.TestCase):
         for i in range(len(sint)):
             self.assertEqual(int(lines[i]), sint[i])
         self._remove_single_file('txt_int_arr')
+    
+    def test_read_json(self):
+        # boolean type will be read in as int
+        data_pairs = [('int_data', int), ('bool_data', int), ('float_data', float), 
+                      ('string_data', str), ('list_data', list), ('dict_json_data', dict)]
+        for attr, data_type in data_pairs:
+            filename = attr + '.json'
+            self._remove_single_file(filename)
+            data = getattr(self, attr)
+
+            with open(filename, 'w') as f:
+                json.dump(data, f)
+
+            read_sarray = SArray.read_json(filename)
+            self.__test_equal(read_sarray, data, data_type)
+            self._remove_single_file(filename)
+
+    def test_read_json_infer_type(self):
+        data = [None, 1, 2, None, 3.0, 4, 5.0, 6, None]
+        converted_data = [float(i) if i is not None else i for i in data]
+        filename = 'read_json_infer_type.json'
+        self._remove_single_file(filename)
+
+        with open(filename, 'w') as f:
+            json.dump(data, f)
+
+        read_sarray = SArray.read_json(filename)
+        self.__test_equal(read_sarray, converted_data, float)
+        self._remove_single_file(filename)
+
 
     def _remove_single_file(self, filename):
         try:
@@ -1208,6 +1242,17 @@ class SArrayTest(unittest.TestCase):
         self.assertEqual(len((t - t2).dropna()), 7)
         self.assertEqual(len((t * t2).dropna()), 7)
 
+    def test_sarray_image_equality(self):
+        current_file_dir = os.path.dirname(os.path.realpath(__file__))
+        image_url_1 = current_file_dir + '/images/sample.png'
+        image_url_2 = current_file_dir + '/images/sample.jpg'
+        i = load_images(image_url_1)['image']
+        j = load_images(image_url_2)['image']
+
+        self.__test_equal(i == i, [x == y for (x,y) in zip(i, i)], int)
+        self.__test_equal(j == j, [x == y for (x,y) in zip(j, j)], int)
+        self.__test_equal(i == j, [x == y for (x,y) in zip(i, j)], int)
+
     def test_dropna(self):
         no_nas = ['strings', 'yeah', 'nan', 'NaN', 'NA', 'None']
         t = SArray(no_nas)
@@ -1274,9 +1319,9 @@ class SArrayTest(unittest.TestCase):
 
         # I can hash other stuff too
         # does not throw
-        a.astype(str).hash().__materialize__()
+        a.astype(str).hash().materialize()
 
-        a.apply(lambda x: [x], list).hash().__materialize__()
+        a.apply(lambda x: [x], list).hash().materialize()
 
         # Nones hash too!
         a = SArray([None, None, None], int).hash()
@@ -1384,134 +1429,6 @@ class SArrayTest(unittest.TestCase):
         sa2 = SArray(val2, str)
         with self.assertRaises(RuntimeError):
             sa3 = sa1.append(sa2)
-
-    def test_word_count(self):
-        sa = SArray(["This is someurl http://someurl!!",
-                     "中文 应该也 行",
-                     'Сблъсъкът между'])
-        expected = [{"this": 1, "http://someurl!!": 1, "someurl": 1, "is": 1},
-                    {"中文": 1, "应该也": 1, "行": 1},
-                    {"Сблъсъкът": 1, "между": 1}]
-        expected2 = [{"This": 1, "http://someurl!!": 1, "someurl": 1, "is": 1},
-                     {"中文": 1, "应该也": 1, "行": 1},
-                     {"Сблъсъкът": 1, "между": 1}]
-        sa1 = sa._count_words()
-        self.assertEqual(sa1.dtype, dict)
-        self.__test_equal(sa1, expected, dict)
-
-        sa1 = sa._count_words(to_lower=False)
-        self.assertEqual(sa1.dtype, dict)
-        self.__test_equal(sa1, expected2, dict)
-
-        #should fail if the input type is not string
-        sa = SArray([1, 2, 3])
-        with self.assertRaises(TypeError):
-            sa._count_words()
-
-    def test_word_count2(self):
-        sa = SArray(["This is some url http://www.someurl.com!!", "Should we? Yes, we should."])
-        #TODO: Get some weird unicode whitespace in the Chinese and Russian tests
-        expected1 = [{"this": 1, "is": 1, "some": 1, "url": 1, "http://www.someurl.com!!": 1},
-                     {"should": 1, "we?": 1, "we": 1, "yes,": 1, "should.": 1}]
-        expected2 = [{"this is some url http://www.someurl.com": 1},
-                     {"should we": 1, " yes": 1, " we should.": 1}]
-        word_counts1 = sa._count_words()
-        word_counts2 = sa._count_words(delimiters=["?", "!", ","])
-
-        self.assertEqual(word_counts1.dtype, dict)
-        self.__test_equal(word_counts1, expected1, dict)
-        self.assertEqual(word_counts2.dtype, dict)
-        self.__test_equal(word_counts2, expected2, dict)
-
-    def test_ngram_count(self):
-        sa_word = SArray(["I like big dogs. They are fun. I LIKE BIG DOGS", "I like.", "I like big"])
-        sa_character = SArray(["Fun. is. fun","Fun is fun.","fu", "fun"])
-
-        # Testing word n-gram functionality
-        result = sa_word._count_ngrams(3)
-        result2 = sa_word._count_ngrams(2)
-        result3 = sa_word._count_ngrams(3,"word", to_lower=False)
-        result4 = sa_word._count_ngrams(2,"word", to_lower=False)
-        expected = [{'fun i like': 1, 'i like big': 2, 'they are fun': 1, 'big dogs they': 1, 'like big dogs': 2, 'are fun i': 1, 'dogs they are': 1}, {}, {'i like big': 1}]
-        expected2 = [{'i like': 2, 'dogs they': 1, 'big dogs': 2, 'are fun': 1, 'like big': 2, 'they are': 1, 'fun i': 1}, {'i like': 1}, {'i like': 1, 'like big': 1}]
-        expected3 = [{'I like big': 1, 'fun I LIKE': 1, 'I LIKE BIG': 1, 'LIKE BIG DOGS': 1, 'They are fun': 1, 'big dogs They': 1, 'like big dogs': 1, 'are fun I': 1, 'dogs They are': 1}, {}, {'I like big': 1}]
-        expected4 = [{'I like': 1, 'like big': 1, 'I LIKE': 1, 'BIG DOGS': 1, 'are fun': 1, 'LIKE BIG': 1, 'big dogs': 1, 'They are': 1, 'dogs They': 1, 'fun I': 1}, {'I like': 1}, {'I like': 1, 'like big': 1}]
-
-
-
-        self.assertEqual(result.dtype, dict)
-        self.__test_equal(result, expected, dict)
-        self.assertEqual(result2.dtype, dict)
-        self.__test_equal(result2, expected2, dict)
-        self.assertEqual(result3.dtype, dict)
-        self.__test_equal(result3, expected3, dict)
-        self.assertEqual(result4.dtype, dict)
-        self.__test_equal(result4, expected4, dict)
-
-
-        #Testing character n-gram functionality
-        result5 = sa_character._count_ngrams(3, "character")
-        result6 = sa_character._count_ngrams(2, "character")
-        result7 = sa_character._count_ngrams(3, "character", to_lower=False)
-        result8 = sa_character._count_ngrams(2, "character", to_lower=False)
-        result9 = sa_character._count_ngrams(3, "character", to_lower=False, ignore_space=False)
-        result10 = sa_character._count_ngrams(2, "character", to_lower=False, ignore_space=False)
-        result11 = sa_character._count_ngrams(3, "character", to_lower=True, ignore_space=False)
-        result12 = sa_character._count_ngrams(2, "character", to_lower=True, ignore_space=False)
-        expected5 = [{'fun': 2, 'nis': 1, 'sfu': 1, 'isf': 1, 'uni': 1}, {'fun': 2, 'nis': 1, 'sfu': 1, 'isf': 1, 'uni': 1}, {}, {'fun': 1}]
-        expected6 = [{'ni': 1, 'is': 1, 'un': 2, 'sf': 1, 'fu': 2}, {'ni': 1, 'is': 1, 'un': 2, 'sf': 1, 'fu': 2}, {'fu': 1}, {'un': 1, 'fu': 1}]
-        expected7 = [{'sfu': 1, 'Fun': 1, 'uni': 1, 'fun': 1, 'nis': 1, 'isf': 1}, {'sfu': 1, 'Fun': 1, 'uni': 1, 'fun': 1, 'nis': 1, 'isf': 1}, {}, {'fun': 1}]
-        expected8 = [{'ni': 1, 'Fu': 1, 'is': 1, 'un': 2, 'sf': 1, 'fu': 1}, {'ni': 1, 'Fu': 1, 'is': 1, 'un': 2, 'sf': 1, 'fu': 1}, {'fu': 1}, {'un': 1, 'fu': 1}]
-        expected9 = [{' fu': 1, ' is': 1, 's f': 1, 'un ': 1, 'Fun': 1, 'n i': 1, 'fun': 1, 'is ': 1}, {' fu': 1, ' is': 1, 's f': 1, 'un ': 1, 'Fun': 1, 'n i': 1, 'fun': 1, 'is ': 1}, {}, {'fun': 1}]
-        expected10 = [{' f': 1, 'fu': 1, 'n ': 1, 'is': 1, ' i': 1, 'un': 2, 's ': 1, 'Fu': 1}, {' f': 1, 'fu': 1, 'n ': 1, 'is': 1, ' i': 1, 'un': 2, 's ': 1, 'Fu': 1}, {'fu': 1}, {'un': 1, 'fu': 1}]
-        expected11 = [{' fu': 1, ' is': 1, 's f': 1, 'un ': 1, 'n i': 1, 'fun': 2, 'is ': 1}, {' fu': 1, ' is': 1, 's f': 1, 'un ': 1, 'n i': 1, 'fun': 2, 'is ': 1}, {}, {'fun': 1}]
-        expected12 = [{' f': 1, 'fu': 2, 'n ': 1, 'is': 1, ' i': 1, 'un': 2, 's ': 1}, {' f': 1, 'fu': 2, 'n ': 1, 'is': 1, ' i': 1, 'un': 2, 's ': 1}, {'fu': 1}, {'un': 1, 'fu': 1}]
-
-        self.assertEqual(result5.dtype, dict)
-        self.__test_equal(result5, expected5, dict)
-        self.assertEqual(result6.dtype, dict)
-        self.__test_equal(result6, expected6, dict)
-        self.assertEqual(result7.dtype, dict)
-        self.__test_equal(result7, expected7, dict)
-        self.assertEqual(result8.dtype, dict)
-        self.__test_equal(result8, expected8, dict)
-        self.assertEqual(result9.dtype, dict)
-        self.__test_equal(result9, expected9, dict)
-        self.assertEqual(result10.dtype, dict)
-        self.__test_equal(result10, expected10, dict)
-        self.assertEqual(result11.dtype, dict)
-        self.__test_equal(result11, expected11, dict)
-        self.assertEqual(result12.dtype, dict)
-        self.__test_equal(result12, expected12, dict)
-
-
-
-        sa = SArray([1, 2, 3])
-        with self.assertRaises(TypeError):
-            #should fail if the input type is not string
-            sa._count_ngrams()
-
-        with self.assertRaises(TypeError):
-            #should fail if n is not of type 'int'
-            sa_word._count_ngrams(1.01)
-
-
-
-        with self.assertRaises(ValueError):
-            #should fail with invalid method
-            sa_word._count_ngrams(3,"bla")
-
-        with self.assertRaises(ValueError):
-            #should fail with n <0
-            sa_word._count_ngrams(0)
-
-
-        with warnings.catch_warnings(record=True) as context:
-            warnings.simplefilter("always")
-            sa_word._count_ngrams(10)
-            assert len(context) == 1
-
-
 
     def test_dict_keys(self):
         # self.dict_data =  [{str(i): i, i : float(i)} for i in self.int_data]

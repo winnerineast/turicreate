@@ -13,7 +13,7 @@
 #include <core/storage/fileio/block_cache.hpp>
 #include <core/globals/globals.hpp>
 #include <core/random/random.hpp>
-#ifdef TC_ENABLE_REMOTEFS
+#ifndef TC_DISABLE_REMOTEFS
 #include <core/storage/fileio/hdfs.hpp>
 #endif
 #include <iostream>
@@ -85,13 +85,15 @@ static bool check_cache_file_location(std::string val) {
   if (paths.size() == 0)
     throw std::string("Value cannot be empty");
   for (std::string path: paths) {
-    if (!boost::filesystem::is_directory(path))
+    if (!boost::filesystem::is_directory(path)){
+      std::cerr<<"Could not write to the turicreate file cache, which is currently set to '" + path + "' Using path : "<<std::endl;
       throw std::string("Directory: ") + path + " does not exist";
+    }
   }
   return true;
 }
 
-#ifdef TC_ENABLE_REMOTEFS
+#ifndef TC_DISABLE_REMOTEFS
 static bool check_cache_file_hdfs_location(std::string val) {
   if (get_protocol(val) == "hdfs") {
 #ifdef TC_BUILD_IOS
@@ -154,7 +156,7 @@ REGISTER_GLOBAL_WITH_CHECKS(std::string,
                             check_cache_file_location);
 
 
-#ifdef TC_ENABLE_REMOTEFS
+#ifndef TC_DISABLE_REMOTEFS
 REGISTER_GLOBAL_WITH_CHECKS(std::string,
                             CACHE_FILE_HDFS_LOCATION,
                             true,

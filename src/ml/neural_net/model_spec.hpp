@@ -1,3 +1,4 @@
+
 /* Copyright © 2018 Apple Inc. All rights reserved.
  *
  * Use of this source code is governed by a BSD-3-clause license that can
@@ -21,6 +22,7 @@
 namespace CoreML {
 namespace Specification {
 class NeuralNetwork;
+class WeightParams;
 }
 }
 
@@ -148,6 +150,19 @@ public:
   void add_sigmoid(const std::string& name, const std::string& input);
 
   /**
+   * Appends a pooling layer.
+   * By default, it's a max pooling layer. And it can only be max pooling
+   * TODO: be able to set other pooling types
+   *
+   * \param use_poolexcludepadding padded values are excluded from the
+   * count (denominator) when computing average pooling.
+   */
+  void add_pooling(const std::string& name, const std::string& input,
+                   size_t kernel_height, size_t kernel_width, size_t stride_h,
+                   size_t stride_w, padding_type padding,
+                   bool use_poolexcludepadding = false);
+
+  /**
    * Appends a convolution layer.
    *
    * \param name The name of the layer and its output
@@ -165,6 +180,31 @@ public:
                        size_t stride_h, size_t stride_w, padding_type padding,
                        weight_initializer weight_initializer_fn,
                        weight_initializer bias_initializer_fn = nullptr);
+
+  /**
+   * Appends a padding layer.
+   *
+   * \param name The name of the layer and its output
+   * \param input The name of the layer's input
+   * \param padding_top The padding on the top
+   * \param padding_bottom The padding on the bottom
+   * \param padding_left The padding to the left
+   * \param padding_right The padding to the right
+   */
+  void add_padding(const std::string& name, const std::string& input,
+                   size_t padding_top, size_t padding_bottom,
+                   size_t padding_left, size_t padding_right);
+
+  /**
+   * Appends an upsampling layer.
+   *
+   * \param name The name of the layer and its output
+   * \param input The name of the layer's input
+   * \param scaling_x The upsample scale on the x axis
+   * \param scaling_y The upsample scale on the y axis
+   */
+  void add_upsampling(const std::string& name, const std::string& input,
+                      size_t scaling_x, size_t scaling_y);
 
   /**
    * Appends an inner-product (dense, fully connected) layer.
@@ -197,6 +237,19 @@ public:
                      size_t num_channels, float epsilon);
 
   /**
+   * Appends an instance norm layer.
+   *
+   * The beta is initialized to 0.f; the gamma is initialized to 1.f
+   *
+   * \param name The name of the layer and its output
+   * \param input The name of the layer's input
+   * \param num_channels The C dimension of the input and output
+   * \param epsilon Added to the variance for each input before normalizing
+   */
+  void add_instancenorm(const std::string& name, const std::string& input,
+                        size_t num_channels, float epsilon);
+
+  /**
    * Appends a layer that concatenates its inputs along the channel axis.
    *
    * \param name The name of the layer and its output
@@ -212,6 +265,18 @@ public:
    * \param input The name of the layer's input
    */
   void add_softmax(const std::string& name, const std::string& input);
+
+  /**
+   * Appends a layer that performs flatten normalization (along channel axis).
+   *
+   * currently only supports channel first flattening, which means if the input order is
+   * ``[C, H, W]``, then output array will be ``[C * H * W, 1, 1]``, still `C-major`
+   * orderring. No underlying array storage will be changed.
+   *
+   * \param name The name of the layer and its output
+   * \param input The name of the layer's input
+   */
+  void add_flatten(const std::string& name, const std::string& input);
 
   /**
    * Appends a layer that performs elementwise addition.
@@ -250,7 +315,7 @@ public:
    * \param weight_initializer_fn Callback used to initialize the weights
    */
   void add_scale(const std::string& name, const std::string& input,
-                 const std::array<size_t, 3>& shape_c_h_w,
+                 const std::vector<size_t>& shape_c_h_w,
                  weight_initializer scale_initializer_fn);
 
   /**
@@ -324,8 +389,14 @@ public:
   // needed. If/when we support the full range of NeuralNetworkLayer values,
   // this could be shared in some form with coremltools.
 
-private:
+  /**
+   * Appends a preprocessing layer
+   * Now only support image scaling preprocessing though.
+   */
+  void add_preprocessing(const std::string& feature_name,
+                         const float image_scale);
 
+ private:
   std::unique_ptr<CoreML::Specification::NeuralNetwork> impl_;
 };
 

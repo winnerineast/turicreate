@@ -40,6 +40,7 @@ import sys
 import six
 import csv
 from collections import Iterable as _Iterable
+import warnings
 
 __all__ = ['SFrame']
 __LOGGER__ = _logging.getLogger(__name__)
@@ -1337,6 +1338,9 @@ class SFrame(object):
         verbose : bool, optional
             If True, print the progress.
 
+        nrows_to_infer : integer
+            The number of rows used to infer column types.
+
         Returns
         -------
         out : SFrame
@@ -1602,6 +1606,8 @@ class SFrame(object):
             g = SArray.read_json(url)
             if len(g) == 0:
                 return SFrame()
+            if g.dtype != dict:
+                raise RuntimeError("Invalid input JSON format. Expected list of dictionaries")
             g = SFrame({'X1':g})
             return g.unpack('X1','')
         elif orient == "lines":
@@ -1618,6 +1624,7 @@ class SFrame(object):
         else:
             raise ValueError("Invalid value for orient parameter (" + str(orient) + ")")
 
+        
 
     @classmethod
     def from_sql(cls, conn, sql_statement, params=None, type_inference_rows=100,
@@ -2440,7 +2447,7 @@ class SFrame(object):
         """
         return SFrame(_proxy=self.__proxy__.tail(n))
 
-    def apply(self, fn, dtype=None, seed=None):
+    def apply(self, fn, dtype=None):
         """
         Transform each row to an :class:`~turicreate.SArray` according to a
         specified function. Returns a new SArray of ``dtype`` where each element
@@ -2462,9 +2469,6 @@ class SFrame(object):
             The dtype of the new SArray. If None, the first 100
             elements of the array are used to guess the target
             data type.
-
-        seed : int, optional
-            Used as the seed if a random number generator is included in `fn`.
 
         Returns
         -------
@@ -2489,9 +2493,7 @@ class SFrame(object):
         if dtype is None:
             dtype = SArray(dryrun).dtype
 
-        if seed is None:
-            seed = abs(hash("%0.20f" % time.time())) % (2 ** 31)
-
+        seed = abs(hash("%0.20f" % time.time())) % (2 ** 31)
 
         nativefn = None
         try:
@@ -2649,7 +2651,6 @@ class SFrame(object):
         if (fraction > 1 or fraction < 0):
             raise ValueError('Invalid sampling rate: ' + str(fraction))
 
-
         if (self.num_rows() == 0 or self.num_columns() == 0):
             return self
         else:
@@ -2698,6 +2699,7 @@ class SFrame(object):
         """
         if (fraction > 1 or fraction < 0):
             raise ValueError('Invalid sampling rate: ' + str(fraction))
+        
         if (self.num_rows() == 0 or self.num_columns() == 0):
             return (SFrame(), SFrame())
 
@@ -3687,13 +3689,6 @@ class SFrame(object):
         For an SFrame that is lazily evaluated, force the persistence of the
         SFrame to disk, committing all lazy evaluated operations.
         """
-        return self.__materialize__()
-
-    def __materialize__(self):
-        """
-        For an SFrame that is lazily evaluated, force the persistence of the
-        SFrame to disk, committing all lazy evaluated operations.
-        """
         with cython_context():
             self.__proxy__.materialize()
 
@@ -4544,7 +4539,7 @@ class SFrame(object):
         try:
             if _target == 'auto' and \
                 get_ipython().__class__.__name__ == "ZMQInteractiveShell":
-                display_table_in_notebook(self)
+                display_table_in_notebook(self, title)
                 return
         except NameError:
             pass

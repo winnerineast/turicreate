@@ -15,13 +15,42 @@ from turicreate.toolkits._internal_utils import _raise_error_if_not_sframe, _mac
 from ._utils import _seconds_as_string
 from .. import _pre_trained_models
 from turicreate.toolkits._model import CustomModel as _CustomModel
+from turicreate.toolkits._model import Model as _Model
 from turicreate.toolkits._main import ToolkitError as _ToolkitError
 from turicreate.toolkits._model import PythonProxy as _PythonProxy
 import turicreate as _tc
 import numpy as _np
 import math as _math
 import six as _six
+from .._mps_utils import (use_mps as _use_mps,
+                          mps_device_memory_limit as _mps_device_memory_limit,
+                          MpsGraphAPI as _MpsGraphAPI,
+                          MpsStyleGraphAPI as _MpsStyleGraphAPI,
+                          MpsGraphNetworkType as _MpsGraphNetworkType,
+                          MpsGraphMode as _MpsGraphMode,
+                          mps_to_mxnet as _mps_to_mxnet,
+                          mxnet_to_mps as _mxnet_to_mps)
 
+USE_CPP = _tkutl._read_env_var_cpp('TURI_ST_USE_CPP_PATH')
+
+def _get_mps_st_net(input_image_shape, batch_size, output_size,
+                    config, weights={}):
+    """
+    Initializes an MpsGraphAPI for style transfer.
+    """
+    c_in, h_in, w_in =  input_image_shape
+
+    c_out = output_size[0]
+    h_out = h_in
+    w_out = w_in
+
+    c_view = c_in
+    h_view = h_in
+    w_view = w_in
+
+    network = _MpsStyleGraphAPI(batch_size, c_in, h_in, w_in, c_out, h_out,
+                                w_out, weights=weights, config=config)
+    return network
 
 def _vgg16_data_prep(batch):
     """
@@ -34,7 +63,7 @@ def _vgg16_data_prep(batch):
 
 def create(style_dataset, content_dataset, style_feature=None,
         content_feature=None, max_iterations=None, model='resnet-16',
-        verbose=True, batch_size = 6, **kwargs):
+        verbose=True, batch_size = 1, **kwargs):
     """
     Create a :class:`StyleTransfer` model.
 
@@ -104,6 +133,10 @@ def create(style_dataset, content_dataset, style_feature=None,
         >>> stylized_images.explore()
 
     """
+    if not isinstance(style_dataset, _tc.SFrame):
+        raise TypeError('"style_dataset" must be of type SFrame.')
+    if not isinstance(content_dataset, _tc.SFrame):
+        raise TypeError('"content_dataset" must be of type SFrame.')
     if len(style_dataset) == 0:
         raise _ToolkitError("style_dataset SFrame cannot be empty")
     if len(content_dataset) == 0:
@@ -112,10 +145,6 @@ def create(style_dataset, content_dataset, style_feature=None,
         raise _ToolkitError("'batch_size' must be greater than or equal to 1")
     if max_iterations is not None and (not isinstance(max_iterations, int) or max_iterations < 0):
         raise _ToolkitError("'max_iterations' must be an integer greater than or equal to 0")
-
-    from ._sframe_loader import SFrameSTIter as _SFrameSTIter
-    import mxnet as _mx
-    from .._mxnet import _mxnet_utils
 
     if style_feature is None:
         style_feature = _tkutl._find_only_image_column(style_dataset)
@@ -130,7 +159,7 @@ def create(style_dataset, content_dataset, style_feature=None,
     _raise_error_if_not_training_sframe(content_dataset, content_feature)
     _tkutl._handle_missing_values(style_dataset, style_feature, 'style_dataset')
     _tkutl._handle_missing_values(content_dataset, content_feature, 'content_dataset')
-        
+
     params = {
         'batch_size': batch_size,
         'vgg16_content_loss_layer': 2,  # conv3_3 layer
@@ -175,11 +204,45 @@ def create(style_dataset, content_dataset, style_feature=None,
 
         params.update(kwargs['_advanced_parameters'])
 
+    if USE_CPP:
+        name = 'style_transfer'
+
+        import turicreate as _turicreate
+
+        # Imports tensorflow
+        import turicreate.toolkits.libtctensorflow
+
+        model = _turicreate.extensions.style_transfer()
+        pretrained_resnet_model = _pre_trained_models.STYLE_TRANSFER_BASE_MODELS['resnet-16']()
+        pretrained_vgg16_model = _pre_trained_models.STYLE_TRANSFER_BASE_MODELS['Vgg16']()
+        options = {}
+        options['image_height'] = params['input_shape'][0]
+        options['image_width'] = params['input_shape'][1]
+        options['content_feature'] = content_feature
+        options['style_feature'] = style_feature
+        if verbose is not None:
+            options['verbose'] = verbose
+        if batch_size is not None:
+            options['batch_size'] = batch_size
+        if max_iterations is not None:
+            options['max_iterations'] = max_iterations
+        options['num_styles'] = len(style_dataset)
+        options['resnet_mlmodel_path'] = pretrained_resnet_model.get_model_path('coreml')
+        options['vgg_mlmodel_path'] = pretrained_vgg16_model.get_model_path('coreml')
+
+        model.train(style_dataset[style_feature], content_dataset[content_feature], options)
+        return StyleTransfer_beta(model_proxy=model, name=name)
+
+    from ._sframe_loader import SFrameSTIter as _SFrameSTIter
+    import mxnet as _mx
+    from .._mxnet import _mxnet_utils
     _content_loss_mult = params['content_loss_mult']
     _style_loss_mult = params['style_loss_mult']
 
     num_gpus = _mxnet_utils.get_num_gpus_in_use(max_devices=params['batch_size'])
+    use_mps = _use_mps() and num_gpus == 0 and _tkutl._mac_ver() >= (10, 15)
     batch_size_each = params['batch_size'] // max(num_gpus, 1)
+
     batch_size = max(num_gpus, 1) * batch_size_each
     input_shape = params['input_shape']
 
@@ -195,17 +258,13 @@ def create(style_dataset, content_dataset, style_feature=None,
     else:
         content_loader_type = params['training_content_loader_type']
 
-    content_images_loader = _SFrameSTIter(content_dataset, batch_size, shuffle=True,
-                                  feature_column=content_feature, input_shape=input_shape,
-                                  loader_type=content_loader_type, aug_params=params,
-                                  sequential=params['sequential_image_processing'])
     ctx = _mxnet_utils.get_mxnet_context(max_devices=params['batch_size'])
 
     num_styles = len(style_dataset)
 
     # TRANSFORMER MODEL
     from ._model import Transformer as _Transformer
-    transformer_model_path = _pre_trained_models.STYLE_TRANSFER_BASE_MODELS[model]().get_model_path()
+    transformer_model_path = _pre_trained_models.STYLE_TRANSFER_BASE_MODELS[model]().get_model_path('mxnet')
     transformer = _Transformer(num_styles, batch_size_each)
     transformer.collect_params().initialize(ctx=ctx)
 
@@ -218,7 +277,7 @@ def create(style_dataset, content_dataset, style_feature=None,
 
     # VGG MODEL
     from ._model import Vgg16 as _Vgg16
-    vgg_model_path = _pre_trained_models.STYLE_TRANSFER_BASE_MODELS['Vgg16']().get_model_path()
+    vgg_model_path = _pre_trained_models.STYLE_TRANSFER_BASE_MODELS['Vgg16']().get_model_path('mxnet')
     vgg_model = _Vgg16()
     vgg_model.collect_params().initialize(ctx=ctx)
     vgg_model.load_params(vgg_model_path, ctx=ctx, ignore_extra=True)
@@ -246,7 +305,7 @@ def create(style_dataset, content_dataset, style_feature=None,
         # Estimate memory usage (based on experiments)
         cuda_mem_req = 260 + batch_size_each * 880 + num_styles * 1.4
 
-        _tkutl._print_neural_compute_device(cuda_gpus=cuda_gpus, use_mps=False,
+        _tkutl._print_neural_compute_device(cuda_gpus=cuda_gpus, use_mps=use_mps,
                                             cuda_mem_req=cuda_mem_req, has_mps_impl=False)
     #
     # Pre-compute gram matrices for style images
@@ -254,10 +313,177 @@ def create(style_dataset, content_dataset, style_feature=None,
     if verbose:
         print('Analyzing visual features of the style images')
 
+    
+    if use_mps:
+        batch_size = 1
+    
+    content_images_loader = _SFrameSTIter(content_dataset, batch_size, shuffle=True,
+                                  feature_column=content_feature, input_shape=input_shape,
+                                  loader_type=content_loader_type, aug_params=params,
+                                  sequential=params['sequential_image_processing'])
+
     style_images_loader = _SFrameSTIter(style_dataset, batch_size, shuffle=False, num_epochs=1,
                                         feature_column=style_feature, input_shape=input_shape,
                                         loader_type='stretch',
                                         sequential=params['sequential_image_processing'])
+
+    style_sa = style_dataset[style_feature]
+    idx_column = _tc.SArray(range(0, style_sa.shape[0]))
+    style_sframe = _tc.SFrame({"style": idx_column, style_feature: style_sa})
+
+    rs = _np.random.RandomState(1234)
+
+    if use_mps:
+        mxnet_mps_key_map = _MpsStyleGraphAPI.mxnet_mps_weight_dict()
+
+        # By passing in dummy values to the network this causes MXNet to trigger
+        # initialization for both the Transformer and VGG16 networks.
+
+        transformer.batch_size = 1
+        test_input = _mx.nd.uniform(0, 1, (1, 3) + input_shape)
+
+        transformer_output = transformer.forward(test_input, _mx.nd.array([0]))
+        vgg16_s = _vgg16_data_prep(transformer_output)
+        vgg_output = vgg_model.forward(vgg16_s)
+
+        vgg16_t = _vgg16_data_prep(test_input)
+        content_output = vgg_model.forward(vgg16_t)
+
+        net_params = transformer.collect_params()
+        vgg_params = vgg_model.collect_params()
+
+        mps_net_params = {}
+
+        keys = list(net_params)
+        vgg_keys = list(vgg_params)
+
+        for k in keys:
+            mps_net_params[mxnet_mps_key_map[k]] = _mxnet_to_mps(net_params[k].data().asnumpy())
+        
+        for k in vgg_keys:
+            mps_net_params[mxnet_mps_key_map[k]] = _mxnet_to_mps(vgg_params[k].data().asnumpy())
+        
+        mps_config = {
+            'mode': _MpsGraphMode.Train,
+            'use_sgd': True,
+            'st_include_network': True,
+            'st_include_loss': True,
+            'st_vgg16_content_loss_layer': params['vgg16_content_loss_layer'],
+            'st_lr': params['lr'],
+            'st_content_loss_mult': params['content_loss_mult'],
+            'st_style_loss_mult': params['style_loss_mult'],
+            'st_finetune_all_params': params['finetune_all_params'], # TODO: plumb through this usage
+            "st_num_styles": num_styles
+        }
+
+        # TODO: Plumb through Predict with multiple batches
+
+        # output = mps_net.predict(_mxnet_to_mps(test_input.asnumpy()))
+        # mps_z = output.asnumpy().reshape(1, 256, 256, 3)
+        # z = _mps_to_mxnet(mps_z)
+
+        mps_net = _get_mps_st_net(input_image_shape=(3, input_shape[0], input_shape[1]),
+                                  batch_size=batch_size,
+                                  output_size=(3, input_shape[0], input_shape[1]),
+                                  config=mps_config,
+                                  weights=mps_net_params)
+
+        style_images = []
+        for s_batch in style_images_loader:
+            s_data = _gluon.utils.split_and_load(s_batch.data[0], ctx_list=ctx, batch_axis=0)
+            style_images.append(s_data[0])
+
+        while iterations < max_iterations:
+            idx = rs.randint(num_styles, size=1)[0]
+
+            style_image = style_images[idx]
+
+            c_batch = content_images_loader.next()
+            c_data = _gluon.utils.split_and_load(c_batch.data[0], ctx_list=ctx, batch_axis=0)
+            content_image = c_data[0]
+
+            loss = mps_net.train(_mxnet_to_mps(content_image.asnumpy()), _mxnet_to_mps(style_image.asnumpy()), idx)
+            cur_loss = loss.asnumpy()[0]
+
+            if smoothed_loss is None:
+                smoothed_loss = cur_loss
+            else:
+                smoothed_loss = 0.9 * smoothed_loss + 0.1 * cur_loss
+
+            if verbose and iterations == 0:
+                # Print progress table header
+                column_names = ['Iteration', 'Loss', 'Elapsed Time']
+                num_columns = len(column_names)
+                column_width = max(map(lambda x: len(x), column_names)) + 2
+                hr = '+' + '+'.join(['-' * column_width] * num_columns) + '+'
+                print(hr)
+                print(('| {:<{width}}' * num_columns + '|').format(*column_names, width=column_width-1))
+                print(hr)
+                    
+            cur_time = _time.time()
+
+            if verbose and (cur_time > last_time + 10 or iterations == max_iterations):
+                # Print progress table row
+                elapsed_time = cur_time - start_time
+                print("| {cur_iter:<{width}}| {loss:<{width}.3f}| {time:<{width}.1f}|".format(
+                    cur_iter = iterations, loss = smoothed_loss,
+                    time = elapsed_time , width = column_width-1))
+                last_time = cur_time
+
+            iterations = iterations + 1
+
+            if iterations == max_iterations:
+                print(hr)
+                break
+
+        mps_weights = mps_net.export()
+
+        mps_mxnet_key_map = _MpsStyleGraphAPI.mps_mxnet_weight_dict()
+
+        # LOGIC
+        #
+        # The two layers we are concerned about are very different. The instance
+        # norm layer weights should have a dimensionality two. Wheras the 
+        # Convolutional Weights have a dimensionality of four. The Convolutional
+        # weights are in a different format in MxNet then they are in MPS. Since
+        # the arrays come back flattened in the MPS a reshape has to occur. But
+        # this reshape happens before the transpose therefore the shape itself
+        # has to be transposed. For the InstanceNorm Layer, however, the weights
+        # are passed back to MxNet in the correct format so just a simple
+        # reshape suffices.
+        #
+        for key in mps_weights:
+            if "transformer" in key:
+                weight = transformer.collect_params()[mps_mxnet_key_map[key]].data()
+                if "inst" in key:
+                    mxnet_weight = _mx.nd.array(_mps_to_mxnet(mps_weights[key].reshape((weight.shape))))
+                elif "conv" in key:
+                    mxnet_weight = _mx.nd.array(_mps_to_mxnet(mps_weights[key].reshape((weight.shape[0], weight.shape[2], weight.shape[3], weight.shape[1]))))
+                transformer.collect_params()[mps_mxnet_key_map[key]].set_data(mxnet_weight)
+
+        training_time = _time.time() - start_time
+
+        state = {
+            '_model': transformer,
+            '_training_time_as_string': _seconds_as_string(training_time),
+            'batch_size': batch_size,
+            'num_styles': num_styles,
+            'model': model,
+            'input_image_shape': input_shape,
+            'styles': style_sframe,
+            'num_content_images': len(content_dataset),
+            'training_time': training_time,
+            'max_iterations': max_iterations,
+            'training_iterations': max_iterations,
+            'training_epochs': content_images_loader.cur_epoch,
+            'style_feature': style_feature,
+            'content_feature': content_feature,
+            "_index_column": "style",
+            'training_loss': smoothed_loss,
+        }
+
+        return StyleTransfer(state)
+
     num_layers = len(params['style_loss_mult'])
     gram_chunks = [[] for _ in range(num_layers)]
     for s_batch in style_images_loader:
@@ -287,16 +513,11 @@ def create(style_dataset, content_dataset, style_feature=None,
         for ctx0 in ctx:
             ctx_grams[ctx0] = [gram.as_in_context(ctx0) for gram in grams]
 
-    style_sa = style_dataset[style_feature]
-    idx_column = _tc.SArray(range(0, style_sa.shape[0]))
-    style_sframe = _tc.SFrame({"style": idx_column, style_feature: style_sa})
-
     #
     # Training loop
     #
 
     vgg_content_loss_layer = params['vgg16_content_loss_layer']
-    rs = _np.random.RandomState(1234)
     while iterations < max_iterations:
         content_images_loader.reset()
         for c_batch in content_images_loader:
@@ -444,6 +665,222 @@ def _raise_error_if_not_training_sframe(dataset, context_column):
     if dataset[context_column].dtype != _tc.Image:
         raise _ToolkitError("Context Image column must contain images")
 
+class StyleTransfer_beta(_Model):
+    """
+    A trained model using C++ implementation that is ready to use for classification or export to
+    CoreML.
+
+    This model should not be constructed directly.
+    """
+    _CPP_STYLE_TRANSFER_VERSION = 1
+
+    def __init__(self, model_proxy=None, name=None):
+        self.__proxy__ = model_proxy
+        self.__name__ = name
+
+    @classmethod
+    def _native_name(cls):
+        if USE_CPP:
+            return "style_transfer"
+        return None
+
+    def __str__(self):
+        """
+        Return a string description of the model to the ``print`` method.
+
+        Returns
+        -------
+        out : string
+            A description of the model.
+        """
+        return self.__class__.__name__
+
+    def __repr__(self):
+        """
+        Returns a string description of the model, including (where relevant)
+        the schema of the training data, description of the training data,
+        training statistics, and model hyperparameters.
+
+        Returns
+        -------
+        out : string
+            A description of the model.
+        """
+        return self.__class__.__name__
+
+    def _get_version(self):
+        return self._CPP_ACTIVITY_CLASSIFIER_VERSION
+
+    def export_coreml(self, filename, image_shape=(256, 256), include_flexible_shape=True):
+        """
+        Save the model in Core ML format. The Core ML model takes an image of
+        fixed size, and a style index inputs and produces an output
+        of an image of fixed size
+
+        Parameters
+        ----------
+        path : string
+            A string to the path for saving the Core ML model.
+
+        image_shape: tuple
+            A tuple (defaults to (256, 256)) will bind the coreml model to a fixed shape.
+
+        include_flexible_shape: bool
+            Allows the size of the input image to be flexible. Any input image were the
+            height and width are at least 64 will be accepted by the Core ML Model.
+
+        See Also
+        --------
+        save
+
+        Examples
+        --------
+        >>> model.export_coreml('StyleTransfer.mlmodel')
+        """
+        options = {}
+        options['image_width'] = image_shape[1]
+        options['image_height'] = image_shape[0]
+        options['include_flexible_shape'] = include_flexible_shape
+
+        return self.__proxy__.export_to_coreml(filename, options)
+
+
+    def stylize(self, images, style=None, verbose=True, max_size=800, batch_size = 4):
+        """
+        Stylize an SFrame of Images given a style index or a list of
+        styles.
+
+        Parameters
+        ----------
+        images : SFrame | Image
+            A dataset that has the same content image column that was used
+            during training.
+
+        style : int or list, optional
+            The selected style or list of styles to use on the ``images``. If
+            `None`, all styles will be applied to each image in ``images``.
+
+        verbose : bool, optional
+            If True, print progress updates.
+
+        max_size : int or tuple
+            Max input image size that will not get resized during stylization.
+
+            Images with a side larger than this value, will be scaled down, due
+            to time and memory constraints. If tuple, interpreted as (max
+            width, max height). Without resizing, larger input images take more
+            time to stylize.  Resizing can effect the quality of the final
+            stylized image.
+
+        batch_size : int, optional
+            If you are getting memory errors, try decreasing this value. If you
+            have a powerful computer, increasing this value may improve
+            performance.
+
+        Returns
+        -------
+        out : SFrame or SArray or turicreate.Image
+            If ``style`` is a list, an SFrame is always returned. If ``style``
+            is a single integer, the output type will match the input type
+            (Image, SArray, or SFrame).
+
+        See Also
+        --------
+        create
+
+        Examples
+        --------
+        >>> image = tc.Image("/path/to/image.jpg")
+        >>> stylized_images = model.stylize(image, style=[0, 1])
+        Data:
+        +--------+-------+------------------------+
+        | row_id | style |     stylized_image     |
+        +--------+-------+------------------------+
+        |   0    |   0   | Height: 256 Width: 256 |
+        |   0    |   1   | Height: 256 Width: 256 |
+        +--------+-------+------------------------+
+        [2 rows x 3 columns]
+
+        >>> images = tc.image_analysis.load_images('/path/to/images')
+        >>> stylized_images = model.stylize(images)
+        Data:
+        +--------+-------+------------------------+
+        | row_id | style |     stylized_image     |
+        +--------+-------+------------------------+
+        |   0    |   0   | Height: 256 Width: 256 |
+        |   0    |   1   | Height: 256 Width: 256 |
+        |   0    |   2   | Height: 256 Width: 256 |
+        |   0    |   3   | Height: 256 Width: 256 |
+        |   1    |   0   | Height: 640 Width: 648 |
+        |   1    |   1   | Height: 640 Width: 648 |
+        |   1    |   2   | Height: 640 Width: 648 |
+        |   1    |   3   | Height: 640 Width: 648 |
+        +--------+-------+------------------------+
+        [8 rows x 3 columns]
+        """
+        options = {}
+        options['style_idx'] = style
+        options['verbose'] = verbose
+        options['max_size'] = max_size
+        options['batch_size'] = batch_size
+
+        if isinstance(style, list) or style is None:
+            if isinstance(images, _tc.SFrame):
+                image_feature = _tkutl._find_only_image_column(images)
+                stylized_images = self.__proxy__.predict(images[image_feature], options)
+                stylized_images = stylized_images.rename({'stylized_image' : 'stylized_' + str(image_feature)})
+                return stylized_images
+            return self.__proxy__.predict(images, options)
+        else:
+            if isinstance(images, _tc.SFrame):
+                if len(images) == 0:
+                    raise _ToolkitError("SFrame cannot be empty")
+                image_feature = _tkutl._find_only_image_column(images)
+                stylized_images = self.__proxy__.predict(images[image_feature], options)
+                stylized_images = stylized_images.rename({'stylized_image' : 'stylized_' + str(image_feature)})
+                return stylized_images
+            elif isinstance(images, (_tc.Image)):
+                stylized_images = self.__proxy__.predict(images, options)
+                return stylized_images["stylized_image"][0]
+            elif isinstance(images, (_tc.SArray)):
+                stylized_images = self.__proxy__.predict(images, options)
+                return stylized_images["stylized_image"]
+
+    def get_styles(self, style=None):
+        """
+        Returns SFrame of style images used for training the model
+
+        Parameters
+        ----------
+        style: int or list, optional
+            The selected style or list of styles to return. If `None`, all
+            styles will be returned
+
+        See Also
+        --------
+        stylize
+
+        Examples
+        --------
+        >>>  model.get_styles()
+        Columns:
+            style   int
+            image   Image
+
+        Rows: 4
+
+        Data:
+        +-------+--------------------------+
+        | style |          image           |
+        +-------+--------------------------+
+        |  0    |  Height: 642 Width: 642  |
+        |  1    |  Height: 642 Width: 642  |
+        |  2    |  Height: 642 Width: 642  |
+        |  3    |  Height: 642 Width: 642  |
+        +-------+--------------------------+
+        """
+
+        return self.__proxy__.get_styles(style)
 
 class StyleTransfer(_CustomModel):
     """
@@ -461,7 +898,9 @@ class StyleTransfer(_CustomModel):
 
     @classmethod
     def _native_name(cls):
-        return "style_transfer"
+        if not USE_CPP:
+            return "style_transfer"
+        return None
 
     def _get_native_state(self):
         from .._mxnet import _mxnet_utils

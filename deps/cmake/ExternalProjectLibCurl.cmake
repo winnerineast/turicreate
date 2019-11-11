@@ -1,4 +1,4 @@
-if(TC_NO_CURL)
+if(NOT ${TC_BUILD_REMOTEFS})
   make_empty_library(curl)
   return()
 endif()
@@ -10,15 +10,12 @@ elseif(WIN32)
 else()
   SET(EXTRA_CONFIGURE_FLAGS LIBS=-ldl --with-ssl=<INSTALL_DIR>)
 endif()
-if(APPLE AND TC_BUILD_IOS)
-  set(EXTRA_CONFIGURE_FLAGS --host=arm-apple-darwin)
-endif()
 
 ExternalProject_Add(ex_libcurl
   PREFIX ${CMAKE_SOURCE_DIR}/deps/build/libcurl
   URL ${CMAKE_SOURCE_DIR}/deps/src/curl-7.65.1
   INSTALL_DIR ${CMAKE_SOURCE_DIR}/deps/local
-  CONFIGURE_COMMAND env CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER} "CFLAGS=-fPIC ${ARCH_FLAG} ${C_REAL_COMPILER_FLAGS}" <SOURCE_DIR>/configure --prefix=<INSTALL_DIR> --without-winidn --without-libidn --without-libidn2 --without-nghttp2 --without-ca-bundle --without-polarssl --without-cyassl --without-nss --disable-crypto-auth --enable-shared=no --enable-static=yes --disable-ldap --without-librtmp --without-zlib --libdir=<INSTALL_DIR>/lib ${EXTRA_CONFIGURE_FLAGS}
+  CONFIGURE_COMMAND env CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER} "CFLAGS=-fPIC -w ${ARCH_FLAG} ${C_REAL_COMPILER_FLAGS}" "CXXFLAGS=-w" <SOURCE_DIR>/configure --prefix=<INSTALL_DIR> --without-winidn --without-libidn --without-libidn2 --without-nghttp2 --without-ca-bundle --without-polarssl --without-cyassl --without-nss --disable-crypto-auth --enable-shared=no --enable-static=yes --disable-ldap --without-librtmp --without-zlib --libdir=<INSTALL_DIR>/lib ${EXTRA_CONFIGURE_FLAGS}
   BUILD_BYPRODUCTS ${CMAKE_SOURCE_DIR}/deps/local/lib/libcurl.a
   )
 

@@ -15,8 +15,11 @@
 using CoreML::Specification::ArrayFeatureType;
 using CoreML::Specification::FeatureDescription;
 using CoreML::Specification::ImageFeatureType;
+using CoreML::Specification::ImageFeatureType_ImageSizeRange;
 using CoreML::Specification::ModelDescription;
 using CoreML::Specification::NeuralNetworkLayer;
+using CoreML::Specification::NeuralNetworkPreprocessing;
+using CoreML::Specification::SizeRange;
 using turi::coreml::MLModelWrapper;
 
 
@@ -118,16 +121,38 @@ void set_threshold_feature(FeatureDescription* feature_desc, std::string feature
   feature_desc->mutable_type()->mutable_doubletype();
 }
 
-void set_image_feature(FeatureDescription* feature_desc, size_t image_width,
-    size_t image_height, bool include_description) {
-  feature_desc->set_name("image");
-  if (include_description)
-    feature_desc->set_shortdescription("Input image");
+void set_image_feature_size_range(ImageFeatureType* image_feature,
+                                  int64_t width_lower,
+                                  int64_t width_higher,
+                                  int64_t height_lower,
+                                  int64_t height_higher) {
+  ImageFeatureType_ImageSizeRange* image_size_range =
+      image_feature->mutable_imagesizerange();
+
+  SizeRange* width_range = image_size_range->mutable_widthrange();
+  SizeRange* height_range = image_size_range->mutable_heightrange();
+
+  width_range->set_lowerbound(width_lower);
+  width_range->set_upperbound(width_higher);
+
+  height_range->set_lowerbound(height_lower);
+  height_range->set_upperbound(height_higher);
+}
+
+ImageFeatureType* set_image_feature(
+    FeatureDescription* feature_desc, size_t image_width, size_t image_height,
+    std::string input_name, std::string description = "",
+    ImageFeatureType::ColorSpace image_type = ImageFeatureType::RGB) {
+  feature_desc->set_name(input_name);
+  if (!description.empty()) feature_desc->set_shortdescription(description);
+
   ImageFeatureType* image_feature =
       feature_desc->mutable_type()->mutable_imagetype();
   image_feature->set_width(image_width);
   image_feature->set_height(image_height);
-  image_feature->set_colorspace(ImageFeatureType::RGB);
+  image_feature->set_colorspace(image_type);
+
+  return image_feature;
 }
 
 } //namespace
@@ -136,8 +161,8 @@ std::shared_ptr<MLModelWrapper> export_object_detector_model(
     const neural_net::model_spec& nn_spec, size_t image_width,
     size_t image_height, size_t num_classes, size_t num_predictions,
     flex_dict user_defined_metadata, flex_list class_labels,
+    const std::string& input_name,
     std::map<std::string, flexible_type> options) {
-
   // Set up Pipeline
   CoreML::Specification::Model model_pipeline;
   model_pipeline.set_specificationversion(3);
@@ -150,7 +175,7 @@ std::shared_ptr<MLModelWrapper> export_object_detector_model(
   NeuralNetworkLayer* first_layer =
       model_nn->mutable_neuralnetwork()->add_layers();
   first_layer->set_name("_divscalar0");
-  first_layer->add_input("image");
+  first_layer->add_input(input_name);
   first_layer->add_output("_divscalar0");
   first_layer->mutable_scale()->add_shapescale(1);
   first_layer->mutable_scale()->mutable_scale()->add_floatvalue(1 / 255.f);
@@ -161,20 +186,30 @@ std::shared_ptr<MLModelWrapper> export_object_detector_model(
   model_nn->mutable_neuralnetwork()->MergeFrom(nn_spec.get_coreml_spec());
   ASSERT_GT(model_nn->neuralnetwork().layers_size(), 1);
 
+  // Set the name of preprocessing layer to input_name as well.
+  // Since in the test case somehow the model doesn't have a preprocessing
+  // layer, so we need to check the size first...
+  if (model_nn->neuralnetwork().preprocessing_size() == 1) {
+    NeuralNetworkPreprocessing* preprocessing_layer =
+        model_nn->mutable_neuralnetwork()->mutable_preprocessing(0);
+    preprocessing_layer->set_featurename(input_name);
+  }
+
   // Wire up the input layer from the copied layers to _divscalar0.
   // TODO: This assumes that the first copied layer is the (only) one to take
   // the input from "image".
   NeuralNetworkLayer* second_layer =
       model_nn->mutable_neuralnetwork()->mutable_layers(1);
   ASSERT_EQ(second_layer->input_size(), 1);
-  ASSERT_EQ(second_layer->input(0), "image");
+
   second_layer->set_input(0, "_divscalar0");
 
   // Write the ModelDescription.
   ModelDescription* model_desc = model_nn->mutable_description();
 
   // Write FeatureDescription for the image input.
-  set_image_feature(model_desc->add_input(), image_width, image_height, false);
+  set_image_feature(model_desc->add_input(), image_width, image_height,
+                    input_name);
 
   if (!options["include_non_maximum_suppression"].to<bool>()){
 
@@ -257,7 +292,8 @@ std::shared_ptr<MLModelWrapper> export_object_detector_model(
   first_layer_nms->set_coordinatesoutputfeaturename("coordinates");
 
   // Write FeatureDescription for the image input.
-  set_image_feature(pipeline_desc->add_input(), image_width, image_height, true);
+  set_image_feature(pipeline_desc->add_input(), image_width, image_height,
+                    input_name, "Input image");
 
   // Write FeatureDescription for the IOU Threshold input.
   FeatureDescription* iou_threshold = pipeline_desc->add_input();
@@ -346,6 +382,98 @@ std::shared_ptr<MLModelWrapper> export_activity_classifier_model(
     nn_classifier->mutable_stringclasslabels()->add_vector(
         class_label.to<flex_string>());
   }
+  nn_classifier->set_labelprobabilitylayername(target + "Probability");
+
+  return std::make_shared<MLModelWrapper>(
+      std::make_shared<CoreML::Model>(model));
+}
+
+std::shared_ptr<coreml::MLModelWrapper> export_style_transfer_model(
+    const neural_net::model_spec& nn_spec, size_t image_width,
+    size_t image_height, flex_dict user_defined_metadata) {
+  CoreML::Specification::Model model;
+  model.set_specificationversion(3);
+
+  ModelDescription* model_desc = model.mutable_description();
+
+  ImageFeatureType* input_feat =
+      set_image_feature(model_desc->add_input(), image_width, image_height,
+                        "image", "Input image");
+
+  /**
+   * The -1 indicates no upper limits for the image size
+   */
+  set_image_feature_size_range(input_feat, 64, -1, 64, -1);
+
+  set_array_feature(
+      model_desc->add_input(), "index",
+      "Style index array (set index I to 1.0 to enable Ith style)", {1});
+
+  ImageFeatureType* style_feat =
+      set_image_feature(model_desc->add_output(), image_width, image_height,
+                        "image", "Stylized image");
+
+  /**
+   * The -1 indicates no upper limits for the image size
+   */
+  set_image_feature_size_range(style_feat, 64, -1, 64, -1);
+
+  model.mutable_neuralnetwork()->MergeFrom(nn_spec.get_coreml_spec());
+
+  auto model_wrapper =
+      std::make_shared<MLModelWrapper>(std::make_shared<CoreML::Model>(model));
+
+  model_wrapper->add_metadata(
+      {{"user_defined", std::move(user_defined_metadata)}});
+
+  return model_wrapper;
+}
+
+std::shared_ptr<coreml::MLModelWrapper> export_drawing_classifier_model(
+    const neural_net::model_spec& nn_spec, const flex_list& features,
+    const flex_list& class_labels, const flex_string& target)
+{
+  CoreML::Specification::Model model;
+  model.set_specificationversion(1);
+
+  // Write the model description.
+  ModelDescription* model_desc = model.mutable_description();
+
+  // Write the primary input features.
+  for (size_t i = 0; i < features.size(); i++) {
+    set_image_feature(model_desc->add_input(), /* W */ 28, /* H */ 28, "image",
+                      "Input image", ImageFeatureType::GRAYSCALE);
+  }
+
+  // Write the primary output features.
+  set_dictionary_string_feature(model_desc->add_output(),
+                                target + "Probability",
+                                "drawing classifier prediction probabilities");
+
+  set_string_feature(model_desc->add_output(), target,
+                     "drawing classifier class label of top prediction");
+
+  // Specify the prediction output names.
+  model_desc->set_predictedfeaturename(target);
+  model_desc->set_predictedprobabilitiesname(target + "Probability");
+
+  // Write the neural network.
+  CoreML::Specification::NeuralNetworkClassifier* nn_classifier =
+      model.mutable_neuralnetworkclassifier();
+
+  // Copy the layers and preprocessing from the provided spec.
+  nn_classifier->mutable_layers()->CopyFrom(nn_spec.get_coreml_spec().layers());
+  if (nn_spec.get_coreml_spec().preprocessing_size() > 0) {
+    nn_classifier->mutable_preprocessing()->CopyFrom(
+        nn_spec.get_coreml_spec().preprocessing());
+  }
+
+  // Add the classifier fields: class labels and probability output name.
+  for (const auto& class_label : class_labels) {
+    nn_classifier->mutable_stringclasslabels()->add_vector(
+        class_label.to<flex_string>());
+  }
+
   nn_classifier->set_labelprobabilitylayername(target + "Probability");
 
   return std::make_shared<MLModelWrapper>(

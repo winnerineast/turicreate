@@ -26,6 +26,7 @@ namespace object_detection {
 
 class EXPORT object_detector: public ml_model_base {
  public:
+  object_detector() = default;
 
   // ml_model_base interface
 
@@ -39,10 +40,25 @@ class EXPORT object_detector: public ml_model_base {
   void train(gl_sframe data, std::string annotations_column_name,
              std::string image_column_name, variant_type validation_data,
              std::map<std::string, flexible_type> opts);
-  variant_map_type evaluate(gl_sframe data, std::string metric);
-  gl_sarray predict(gl_sframe data);
+  variant_type evaluate(gl_sframe data, std::string metric,
+                        std::string output_type,
+                        std::map<std::string, flexible_type> opts);
+  variant_type predict(variant_type data,
+                       std::map<std::string, flexible_type> opts);
   std::shared_ptr<coreml::MLModelWrapper> export_to_coreml(
       std::string filename, std::map<std::string, flexible_type> opts);
+  void import_from_custom_model(variant_map_type model_data, size_t version);
+
+  // Support for iterative training.
+  virtual void init_training(gl_sframe data,
+                             std::string annotations_column_name,
+                             std::string image_column_name,
+                             variant_type validation_data,
+                             std::map<std::string, flexible_type> opts);
+  virtual void resume_training(gl_sframe data, variant_type validation_data);
+  virtual void iterate_training();
+  virtual void synchronize_training();
+  virtual void finalize_training(bool compute_final_metrics);
 
   // Register with Unity server
 
@@ -73,11 +89,33 @@ class EXPORT object_detector: public ml_model_base {
       "    be determined based on the amount of data you provide.\n"
   );
 
-  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::evaluate, "data", "metric");
-  register_defaults("evaluate",
-      {{"metric", std::string("auto")}});
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::init_training, "data",
+                                 "annotations_column_name", "image_column_name",
+                                 "validation_data", "options");
+  register_defaults("init_training",
+                    {{"validation_data", to_variant(gl_sframe())},
+                     {"options",
+                      to_variant(std::map<std::string, flexible_type>())}});
 
-  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::predict, "data");
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::resume_training, "data",
+                                 "validation_data");
+  register_defaults("resume_training",
+                    {{"validation_data", to_variant(gl_sframe())}});
+
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::iterate_training);
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::synchronize_training);
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::finalize_training,
+                                 "compute_final_metrics");
+  register_defaults("finalize_training", {{"compute_final_metrics", true}});
+
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::evaluate, "data", "metric",
+                                 "output_type", "options");
+  register_defaults("evaluate", {{"metric", std::string("auto")},
+                                 {"output_type", std::string("dict")},
+                                 });
+
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::predict, "data", "options");
+  register_defaults("predict",{});
 
   REGISTER_CLASS_MEMBER_FUNCTION(object_detector::export_to_coreml, "filename",
     "options");
@@ -100,11 +138,30 @@ class EXPORT object_detector: public ml_model_base {
       "    a default value of 0.25 is used.\n"
   );
 
+  REGISTER_CLASS_MEMBER_FUNCTION(object_detector::import_from_custom_model,
+                                 "model_data", "version");
+
   // TODO: Remainder of interface: predict, etc.
 
   END_CLASS_MEMBER_REGISTRATION
 
  protected:
+  // Constructor allowing tests to set the initial state of this class and to
+  // inject dependencies.
+  object_detector(
+      const std::map<std::string, variant_type>& initial_state,
+      std::unique_ptr<neural_net::model_spec> nn_spec,
+      std::unique_ptr<neural_net::compute_context> training_compute_context,
+      std::unique_ptr<data_iterator> training_data_iterator,
+      std::unique_ptr<neural_net::image_augmenter> training_data_augmenter,
+      std::unique_ptr<neural_net::model_backend> training_model)
+      : nn_spec_(std::move(nn_spec)),
+        training_compute_context_(std::move(training_compute_context)),
+        training_data_iterator_(std::move(training_data_iterator)),
+        training_data_augmenter_(std::move(training_data_augmenter)),
+        training_model_(std::move(training_model)) {
+    add_or_update_state(initial_state);
+  }
 
   // Override points allowing subclasses to inject dependencies
 
@@ -122,30 +179,26 @@ class EXPORT object_detector: public ml_model_base {
   // Returns the initial neural network to train (represented by its CoreML
   // spec), given the path to a mlmodel file containing the pretrained weights.
   virtual std::unique_ptr<neural_net::model_spec> init_model(
-      const std::string& pretrained_mlmodel_path) const;
+      const std::string& pretrained_mlmodel_path, size_t num_classes) const;
+
+  void init_training_backend();
 
   virtual std::vector<neural_net::image_annotation> convert_yolo_to_annotations(
       const neural_net::float_array& yolo_map,
       const std::vector<std::pair<float, float>>& anchor_boxes,
       float min_confidence);
 
-  // Support for iterative training.
-  // TODO: Expose via forthcoming C-API checkpointing mechanism?
-
-  virtual void init_train(gl_sframe data, std::string annotations_column_name,
-                          std::string image_column_name,
-                          variant_type validation_data,
-                          std::map<std::string, flexible_type> opts);
-  virtual void perform_training_iteration();
-
-  virtual variant_map_type perform_evaluation(gl_sframe data,
-                                              std::string metric);
+  virtual variant_type perform_evaluation(gl_sframe data, std::string metric,
+                                          std::string output_type,
+                                          float confidence_threshold,
+                                          float iou_threshold);
 
   void perform_predict(
       gl_sframe data,
       std::function<void(const std::vector<neural_net::image_annotation>&,
                          const std::vector<neural_net::image_annotation>&)>
-          consumer);
+          consumer,
+      float confidence_threshold, float iou_threshold);
 
   // Utility code
 
@@ -163,12 +216,22 @@ class EXPORT object_detector: public ml_model_base {
       const;
   flex_int get_max_iterations() const;
   flex_int get_training_iterations() const;
+  flex_int get_num_classes() const;
+
+  static variant_type convert_map_to_types(const variant_map_type& result_map,
+                                           const std::string& output_type);
+  static gl_sframe convert_types_to_sframe(const variant_type& data,
+                                           const std::string& column_name);
 
   // Sets certain user options heuristically (from the data).
   void infer_derived_options();
 
   // Waits until the number of pending patches is at most `max_pending`.
   void wait_for_training_batches(size_t max_pending = 0);
+
+  // Ensures that the local copy of the model weights are in sync with the
+  // training backend.
+  void synchronize_model(neural_net::model_spec* nn_spec) const;
 
   // Computes and records training/validation metrics.
   void update_model_metrics(gl_sframe data, gl_sframe validation_data);

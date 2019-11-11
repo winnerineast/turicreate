@@ -384,7 +384,7 @@ class SFrameTest(unittest.TestCase):
             sf = SFrame(f)
             # make a new column of "1s and save it back
             int_data2 = sf['int_data'] + 1
-            int_data2.__materialize__()
+            int_data2.materialize()
             sf['int_data2'] = int_data2
             sf._save_reference(f)
             del sf
@@ -1125,7 +1125,7 @@ class SFrameTest(unittest.TestCase):
             sf['value'] = values
             sf['vector_values'] = vector_values
             sf['nd_values'] = nd_values
-            sf.__materialize__()
+            sf.materialize()
             built_ins = [aggregate.COUNT(), aggregate.SUM('value'),
                     aggregate.AVG('value'), aggregate.MIN('value'),
                     aggregate.MAX('value'), aggregate.VAR('value'),
@@ -1582,7 +1582,7 @@ class SFrameTest(unittest.TestCase):
             sf = sf.append(SFrame(data = self.dataframe))
 
         #consume
-        sf.__materialize__()
+        sf.materialize()
 
     def test_print_sframe(self):
         sf = SFrame()
@@ -3341,7 +3341,7 @@ class SFrameTest(unittest.TestCase):
 
         # materialize it, materialized, has_size
         sf['a'] = range(1000)
-        sf.__materialize__()
+        sf.materialize()
         self.assertTrue(sf.__is_materialized__())
         self.assertTrue(sf.__has_size__())
 
@@ -3770,6 +3770,20 @@ class SFrameTest(unittest.TestCase):
         sf_test = SFrame()
         sf_test['y'] = SArray([5])
 
+        _assert_sframe_equal(sf, sf_test)
+
+     
+    def test_filter_by_dict(self):
+        # Check for dict in filter_by
+        sf = SFrame({'check':range(10)})
+        d = {1:1}
+
+        sf = sf.filter_by(d.keys(),'check')
+        sf_test = sf.filter_by(list(d.keys()),'check')
+        _assert_sframe_equal(sf, sf_test)
+
+        sf = sf.filter_by(d.values(),'check')
+        sf_test = sf.filter_by(list(d.values()),'check')
         _assert_sframe_equal(sf, sf_test)
 
 
