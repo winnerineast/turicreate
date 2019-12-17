@@ -6,6 +6,7 @@
 
 #include <toolkits/coreml_export/neural_net_models_exporter.hpp>
 
+#include <locale>
 #include <sstream>
 
 #include <core/logging/assertions.hpp>
@@ -50,6 +51,14 @@ void set_string_feature(FeatureDescription* feature_desc, std::string name,
   feature_desc->set_name(std::move(name));
   feature_desc->set_shortdescription(std::move(short_description));
   feature_desc->mutable_type()->mutable_stringtype();
+}
+
+void set_int64_feature(FeatureDescription* feature_desc, std::string name,
+                       std::string short_description)
+{
+  feature_desc->set_name(std::move(name));
+  feature_desc->set_shortdescription(std::move(short_description));
+  feature_desc->mutable_type()->mutable_int64type();
 }
 
 void set_array_feature(FeatureDescription* feature_desc, std::string name,
@@ -160,8 +169,7 @@ ImageFeatureType* set_image_feature(
 std::shared_ptr<MLModelWrapper> export_object_detector_model(
     const neural_net::model_spec& nn_spec, size_t image_width,
     size_t image_height, size_t num_classes, size_t num_predictions,
-    flex_dict user_defined_metadata, flex_list class_labels,
-    const std::string& input_name,
+    flex_list class_labels, const std::string& input_name,
     std::map<std::string, flexible_type> options) {
   // Set up Pipeline
   CoreML::Specification::Model model_pipeline;
@@ -225,11 +233,6 @@ std::shared_ptr<MLModelWrapper> export_object_detector_model(
     model_nn->set_specificationversion(1);
     auto model_wrapper = std::make_shared<MLModelWrapper>(
       std::make_shared<CoreML::Model>(*model_nn));
-
-    // Add metadata.
-    model_wrapper->add_metadata({
-        { "user_defined", std::move(user_defined_metadata) }
-    });
 
     return model_wrapper;
   }
@@ -322,8 +325,6 @@ std::shared_ptr<MLModelWrapper> export_object_detector_model(
     std::make_shared<CoreML::Model>(model_pipeline));
 
   // Add metadata.
-  pipeline_wrapper->add_metadata({{ "user_defined", std::move(user_defined_metadata)}});
-
   return pipeline_wrapper;
 }
 
@@ -358,7 +359,6 @@ std::shared_ptr<MLModelWrapper> export_activity_classifier_model(
   set_array_feature(feature_desc, "stateIn", "LSTM state input",
                     { lstm_hidden_layer_size*2 });
 
-  set_feature_optional(feature_desc);
   set_array_feature(model_desc->add_output(), "stateOut",
                     "LSTM state output", { lstm_hidden_layer_size * 2 });
 
@@ -390,41 +390,61 @@ std::shared_ptr<MLModelWrapper> export_activity_classifier_model(
 
 std::shared_ptr<coreml::MLModelWrapper> export_style_transfer_model(
     const neural_net::model_spec& nn_spec, size_t image_width,
-    size_t image_height, flex_dict user_defined_metadata) {
+    size_t image_height, bool include_flexible_shape,
+    std::string content_feature, std::string style_feature, size_t num_styles) {
+
   CoreML::Specification::Model model;
   model.set_specificationversion(3);
 
   ModelDescription* model_desc = model.mutable_description();
 
-  ImageFeatureType* input_feat =
-      set_image_feature(model_desc->add_input(), image_width, image_height,
-                        "image", "Input image");
-
-  /**
-   * The -1 indicates no upper limits for the image size
-   */
-  set_image_feature_size_range(input_feat, 64, -1, 64, -1);
+  FeatureDescription* model_input = model_desc->add_input();
+  ImageFeatureType* input_feat = set_image_feature(model_input,
+                                                   image_width,
+                                                   image_height,
+                                                   content_feature,
+                                                   "Input image");
 
   set_array_feature(
       model_desc->add_input(), "index",
-      "Style index array (set index I to 1.0 to enable Ith style)", {1});
+      "Style index array (set index I to 1.0 to enable Ith style)", {num_styles});
+  /*
+   * prefix style with stylized and capitalize the following identifier, this
+   * avoids name clashes with the `content_feature` for exporting to CoreML.
+   */
+  style_feature[0] = std::toupper(style_feature[0]);
+  style_feature = "stylized" + style_feature;
 
-  ImageFeatureType* style_feat =
-      set_image_feature(model_desc->add_output(), image_width, image_height,
-                        "image", "Stylized image");
+  FeatureDescription* model_output = model_desc->add_output();
+  ImageFeatureType* style_feat = set_image_feature(model_output,
+                                                   image_width,
+                                                   image_height,
+                                                   style_feature,
+                                                   "Stylized image");
 
   /**
    * The -1 indicates no upper limits for the image size
    */
-  set_image_feature_size_range(style_feat, 64, -1, 64, -1);
+  if (include_flexible_shape) {
+    set_image_feature_size_range(input_feat, 64, -1, 64, -1);
+    set_image_feature_size_range(style_feat, 64, -1, 64, -1);
+  }
 
-  model.mutable_neuralnetwork()->MergeFrom(nn_spec.get_coreml_spec());
+  CoreML::Specification::NeuralNetwork* nn = model.mutable_neuralnetwork();
+  nn->MergeFrom(nn_spec.get_coreml_spec());
+
+  /*
+    Change input to first and last layers to match input and output feature names.
+  */
+  int last_layer_index = nn->layers_size() - 1;
+  NeuralNetworkLayer* first_layer = nn->mutable_layers(0);
+  NeuralNetworkLayer* last_layer = nn->mutable_layers(last_layer_index);
+
+  first_layer->set_input(0, content_feature);
+  last_layer->set_output(0, style_feature);
 
   auto model_wrapper =
       std::make_shared<MLModelWrapper>(std::make_shared<CoreML::Model>(model));
-
-  model_wrapper->add_metadata(
-      {{"user_defined", std::move(user_defined_metadata)}});
 
   return model_wrapper;
 }
@@ -441,8 +461,9 @@ std::shared_ptr<coreml::MLModelWrapper> export_drawing_classifier_model(
 
   // Write the primary input features.
   for (size_t i = 0; i < features.size(); i++) {
-    set_image_feature(model_desc->add_input(), /* W */ 28, /* H */ 28, "image",
-                      "Input image", ImageFeatureType::GRAYSCALE);
+    set_image_feature(model_desc->add_input(), /* W */ 28, /* H */ 28,
+                      features[i].to<flex_string>(), "Input image",
+                      ImageFeatureType::GRAYSCALE);
   }
 
   // Write the primary output features.
@@ -450,8 +471,15 @@ std::shared_ptr<coreml::MLModelWrapper> export_drawing_classifier_model(
                                 target + "Probability",
                                 "drawing classifier prediction probabilities");
 
-  set_string_feature(model_desc->add_output(), target,
-                     "drawing classifier class label of top prediction");
+  flex_type_enum class_type = class_labels.begin()->get_type();
+
+  if (class_type == flex_type_enum::STRING) {
+    set_string_feature(model_desc->add_output(), target,
+                       "drawing classifier class label of top prediction");
+  } else {
+    set_int64_feature(model_desc->add_output(), target,
+                      "drawing classifier class label of top prediction");
+  }
 
   // Specify the prediction output names.
   model_desc->set_predictedfeaturename(target);
@@ -470,8 +498,15 @@ std::shared_ptr<coreml::MLModelWrapper> export_drawing_classifier_model(
 
   // Add the classifier fields: class labels and probability output name.
   for (const auto& class_label : class_labels) {
-    nn_classifier->mutable_stringclasslabels()->add_vector(
+
+    if (class_type == flex_type_enum::STRING) {
+      nn_classifier->mutable_stringclasslabels()->add_vector(
         class_label.to<flex_string>());
+    } else {
+      nn_classifier->mutable_int64classlabels()->add_vector(
+        class_label.to<flex_int>());
+    }
+
   }
 
   nn_classifier->set_labelprobabilitylayername(target + "Probability");

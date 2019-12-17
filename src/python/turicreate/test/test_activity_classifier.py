@@ -20,8 +20,6 @@ from turicreate.toolkits._main import ToolkitError as _ToolkitError
 import uuid
 
 USE_CPP = _read_env_var_cpp('TURI_AC_USE_CPP_PATH')
-IS_PRE_6_0_RC = float(tc.__version__) < 6.0
-
 
 def _load_data(self, num_examples = 1000, num_features = 3, max_num_sessions = 4,
                randomize_num_sessions = True, num_labels = 9, prediction_window = 5,
@@ -87,6 +85,25 @@ class ActivityClassifierCreateStressTests(unittest.TestCase):
                             session_id=self.session_id,
                             prediction_window=self.prediction_window,
                             validation_set=None)
+
+    def test_create_invalid_batch_size(self):
+        with self.assertRaises(_ToolkitError):
+            tc.activity_classifier.create(self.data,
+                            features=self.features,
+                            target=self.target,
+                            session_id=self.session_id,
+                            prediction_window=self.prediction_window,
+                            validation_set=None,
+                            batch_size=-1)
+
+        with self.assertRaises(_ToolkitError):
+            tc.activity_classifier.create(self.data,
+                            features=self.features,
+                            target=self.target,
+                            session_id=self.session_id,
+                            prediction_window=self.prediction_window,
+                            validation_set=None,
+                            batch_size='1')
 
     def test_create_none_validation_set(self):
         model = tc.activity_classifier.create(self.data,
@@ -316,10 +333,25 @@ class ActivityClassifierTest(unittest.TestCase):
 
         # Load the model back from the CoreML model file
         coreml_model = coremltools.models.MLModel(filename)
-
-        rs = np.random.RandomState(1234)
+        import platform
+        self.assertDictEqual({
+            'com.github.apple.turicreate.version': tc.__version__,
+            'com.github.apple.os.platform': platform.platform(),
+            'target': self.target,
+            'type': 'activity_classifier',
+            'prediction_window': str(self.prediction_window),
+            'session_id': self.session_id,
+            'features': ','.join(self.features),
+            'max_iterations': '10',
+            'version': '2',
+            }, dict(coreml_model.user_defined_metadata)
+        )
+        expected_result = 'Activity classifier created by Turi Create (version %s)' \
+                                    % (tc.__version__)
+        self.assertEquals(expected_result, coreml_model.short_description)
 
         # Create a small dataset, and compare the models' predict() output
+        rs = np.random.RandomState(1234)
         dataset = tc.util.generate_random_sframe(column_codes='r' * 3, num_rows=10)
         dataset['session_id'] = 0
         dataset[self.target] = random_labels = [rs.randint(0, self.num_labels - 1, ) for i in range(10)]
@@ -340,6 +372,7 @@ class ActivityClassifierTest(unittest.TestCase):
                 for key, value in input_features.items():
                     first_input_dict[key] = value[:w].copy()
                     second_input_dict[key] = value[w:2*w].copy()
+                first_input_dict["stateIn"] = np.zeros((400))
                 ret0 = coreml_model.predict(first_input_dict)
 
                 second_input_dict["stateIn"] = ret0["stateOut"]
@@ -463,7 +496,6 @@ class ActivityClassifierTest(unittest.TestCase):
                     self.assertTrue(False, "After model save and load, method " + test_method +
                                     " has failed with error: " + str(e))
 
-@pytest.mark.xfail()
 @unittest.skipIf(tc.util._num_available_gpus() == 0, 'Requires GPU')
 @pytest.mark.gpu
 class ActivityClassifierGPUTest(unittest.TestCase):
@@ -482,10 +514,9 @@ class ActivityClassifierGPUTest(unittest.TestCase):
                                     session_id=self.session_id)
                 with test_util.TempDirectory() as filename:
                     model.save(filename)
-                    tc.config.set_num_gpus(out_gpus)
                     model = tc.load_model(filename)
 
-                with test_util.TempDirectory() as filename:
-                    model.export_coreml(filename)
+                filename = tempfile.mkstemp('ActivityClassifier.mlmodel')[1]
+                model.export_coreml(filename)
 
         tc.config.set_num_gpus(old_num_gpus)

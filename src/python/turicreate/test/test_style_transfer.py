@@ -21,7 +21,6 @@ import coremltools
 
 
 _NUM_STYLES = 4
-IS_PRE_6_0_RC = float(tc.__version__) < 6.0
 
 
 def _get_data(feature, num_examples=100):
@@ -70,6 +69,7 @@ class StyleTransferTest(unittest.TestCase):
         self.style_feature = 'style_feature_name'
         self.content_feature = 'content_feature_name'
         self.pre_trained_model = 'resnet-16'
+
         ## Create the model
         # Model
         self.style_sf = _get_data(feature=self.style_feature, num_examples=_NUM_STYLES)
@@ -154,7 +154,6 @@ class StyleTransferTest(unittest.TestCase):
 
         return style_cases
 
-    @pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
     def test_stylize_fail(self):
         style_cases = self._get_invalid_style_cases()
         model = self.model
@@ -162,7 +161,6 @@ class StyleTransferTest(unittest.TestCase):
             with self.assertRaises(_ToolkitError):
                 model.stylize(self.content_sf[0:1], style=style)
 
-    @pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
     def test_stylize_success(self):
         sf = self.content_sf[0:1]
         model = self.model
@@ -170,6 +168,9 @@ class StyleTransferTest(unittest.TestCase):
 
         for style in styles:
             stylized_out = model.stylize(sf, style=style)
+            feat_name = 'stylized_{}'.format(self.content_feature)
+            self.assertEqual(set(stylized_out.column_names()),
+                  set(["row_id", "style", feat_name]))
 
             # Check the structure of the output
             _raise_error_if_not_sframe(stylized_out)
@@ -183,7 +184,6 @@ class StyleTransferTest(unittest.TestCase):
 
             # Check if input and output image have the same shape
             input_size = (sf[self.content_feature][0].width, sf[self.content_feature][0].height)
-            feat_name = 'stylized_{}'.format(self.content_feature)
             output_size = (stylized_out[0][feat_name].width,
                            stylized_out[0][feat_name].height)
             self.assertEqual(input_size, output_size)
@@ -203,7 +203,6 @@ class StyleTransferTest(unittest.TestCase):
         self.assertTrue(isinstance(imgs, tc.SArray))
         self.assertEqual(len(imgs), len(sarray))
 
-    @pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
     def test_get_styles_fail(self):
         style_cases = self._get_invalid_style_cases()
         model = self.model
@@ -211,7 +210,6 @@ class StyleTransferTest(unittest.TestCase):
             with self.assertRaises(_ToolkitError):
                 model.get_styles(style=style)
 
-    @pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
     def test_get_styles_success(self):
         style = [0,1,2]
         model = self.model
@@ -235,19 +233,39 @@ class StyleTransferTest(unittest.TestCase):
             img = img[..., 0:3]
             return img
 
-    @pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
     def test_export_coreml(self):
         import coremltools
+        import platform
         model = self.model
         for flexible_shape_on in [True, False]:
             filename = tempfile.mkstemp('my_style_transfer.mlmodel')[1]
             model.export_coreml(filename,
                 include_flexible_shape = flexible_shape_on)
+
+            ## Metadata test
+            coreml_model = coremltools.models.MLModel(filename)
+            self.assertDictEqual({
+                'com.github.apple.turicreate.version': tc.__version__,
+                'com.github.apple.os.platform': platform.platform(),
+                'type': 'style_transfer',
+                'content_feature': self.content_feature,
+                'style_feature': self.style_feature,
+                'model': self.pre_trained_model,
+                'max_iterations': '1',
+                'training_iterations': '1',
+                'num_styles': str(self.num_styles),
+                'version': '1',
+                }, dict(coreml_model.user_defined_metadata)
+            )
+            expected_result = 'Style transfer created by Turi Create (version %s)' \
+                                        % (tc.__version__)
+            self.assertEquals(expected_result, coreml_model.short_description)
+
+            ## Correctness test
             if not flexible_shape_on or _mac_ver() >= (10,14):
                 coreml_model = coremltools.models.MLModel(filename)
 
                 mac_os_version_threshold = (10,14) if flexible_shape_on else (10,13)
-
                 if _mac_ver() >= mac_os_version_threshold:
                     img = self.style_sf[0:2][self.style_feature][0]
                     img_fixed = tc.image_analysis.resize(img, 256, 256, 3)
@@ -261,21 +279,11 @@ class StyleTransferTest(unittest.TestCase):
                         img = self._coreml_python_predict(coreml_model, img_fixed)
                         self.assertEqual(img.shape, (512, 512, 3))
 
-                # Also check if we can train a second model and export it (there could
-                # be naming issues in mxnet)
-                filename2 = tempfile.mkstemp('my_style_transfer2.mlmodel')[1]
-                # We also test at the same time if we can export a model with a single
-                # class
-
-                model2 = tc.style_transfer.create(self.style_sf, self.content_sf, max_iterations=1)
-                model2.export_coreml(filename2)
-
     def test_repr(self):
         model = self.model
         self.assertEqual(type(str(model)), str)
         self.assertEqual(type(model.__repr__()), str)
 
-    @pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
     def test_save_and_load(self):
         with test_util.TempDirectory() as filename:
             self.model.save(filename)
@@ -286,8 +294,18 @@ class StyleTransferTest(unittest.TestCase):
             self.test_get_styles_success()
             print("Get styles passed")
 
+    def test_state(self):
+        model = self.model
+        fields = model.__proxy__.list_fields()
+        self.assertTrue("model" in fields)
+        self.assertTrue("num_styles" in fields)
+        self.assertTrue("_training_time_as_string" in fields)
+        self.assertTrue("training_epochs" in fields)
+        self.assertTrue("training_iterations" in fields)
+        self.assertTrue("num_content_images" in fields)
+        self.assertTrue("training_loss" in fields)
 
-@pytest.mark.xfail(IS_PRE_6_0_RC, reason='Requires MXNet')
+
 @unittest.skipIf(tc.util._num_available_cuda_gpus() == 0, 'Requires CUDA GPU')
 @pytest.mark.gpu
 class StyleTransferGPUTest(unittest.TestCase):

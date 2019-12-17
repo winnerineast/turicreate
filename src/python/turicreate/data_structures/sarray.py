@@ -2468,6 +2468,10 @@ class SArray(object):
 
         if (dtype == _Image) and (self.dtype == array.array):
             raise TypeError("Cannot cast from image type to array with sarray.astype(). Please use sarray.pixel_array_to_image() instead.")
+        
+        if float('nan') in self:
+            import turicreate as _tc
+            self=_tc.SArray.where(self == float("nan"),None,self)
 
         with cython_context():
             return SArray(_proxy=self.__proxy__.astype(dtype, undefined_on_failure))
@@ -2782,11 +2786,19 @@ class SArray(object):
         Rows: 6
         [1, 2, 3, 4, 5, 6]
         """
+
         if type(other) is not SArray:
             raise RuntimeError("SArray append can only work with SArray")
 
         if self.dtype != other.dtype:
-            raise RuntimeError("Data types in both SArrays have to be the same")
+            if len(other) == 0:
+                other=other.astype(self.dtype)
+
+            elif len(self) == 0:
+                self=self.astype(other.dtype)
+
+            else:
+                raise RuntimeError("Data types in both SArrays have to be the same")
 
         with cython_context():
             return SArray(_proxy = self.__proxy__.append(other.__proxy__))

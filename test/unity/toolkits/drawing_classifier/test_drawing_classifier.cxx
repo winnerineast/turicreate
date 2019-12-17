@@ -46,7 +46,7 @@ void test_init_training(bool with_bitmap_based_data) {
   // kicks in at the 50% and 75% points.
   static constexpr size_t test_max_iterations = 4;
   static constexpr size_t test_batch_size = 2;
-  const std::vector<std::string> test_class_labels = {"label1", "label2"};
+  const flex_list test_class_labels = {"label1", "label2"};
   static constexpr size_t test_num_rows = 100;
 
   mock_iterator->class_labels_ = test_class_labels;
@@ -145,10 +145,7 @@ void test_init_training(bool with_bitmap_based_data) {
   TS_ASSERT_EQUALS(model.get_field<flex_int>("max_iterations"),
                    test_max_iterations);
   TS_ASSERT_EQUALS(model.get_field<flex_string>("target"), test_target_name);
-  TS_ASSERT_EQUALS(model.get_field<flex_list>("features").size(), 1);
-  TS_ASSERT_EQUALS(
-      model.get_field<flex_list>("features")[0].get<flex_string>(),
-      test_feature_name);
+  TS_ASSERT_EQUALS(model.get_field<flex_string>("feature"), test_feature_name);
   TS_ASSERT_EQUALS(model.get_field<flex_int>("num_classes"),
                    test_class_labels.size());
   TS_ASSERT_EQUALS(model.get_field<flex_int>("training_iterations"), 0);
@@ -190,7 +187,7 @@ BOOST_AUTO_TEST_CASE(test_drawing_classifier_iterate_training) {
   // kicks in at the 50% and 75% points.
   static constexpr size_t test_max_iterations = 4;
   static constexpr size_t test_batch_size = 2;
-  const std::vector<std::string> test_class_labels = {"label1", "label2"};
+  const flex_list test_class_labels = {"label1", "label2"};
   // static constexpr size_t test_num_rows = 100;
   static constexpr float test_loss = 5.f;
 

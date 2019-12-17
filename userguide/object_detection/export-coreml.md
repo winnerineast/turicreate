@@ -7,7 +7,7 @@ Core ML.
 
 With Turi Create 5.0+ and starting in iOS 12, macOS 10.14 you can
 directly integrate object detector models via the [Vision
-Framework](https://developer.apple.com/documentation/vision)
+Framework](https://developer.apple.com/documentation/vision).
 
 
 You can export to Core ML in Turi Create 5 as follows:
@@ -103,10 +103,36 @@ Before we discuss how to use this threshold, we must first make a prediction.
 
 ##### Prediction
 
-Making a prediction is easy:
+Making a prediction is easy. Starting in iOS 13 we can now include confidence thresholds
+directly in the `VNCoreMLModel`. For an example of how to include thresholds in a project utilizing the Vision framework,
+see [here](https://developer.apple.com/documentation/coreml/understanding_a_dice_roll_with_vision_and_object_detection).
+First, we need to setup a subclass of [`MLFeatureProvider`](https://developer.apple.com/documentation/coreml/mlfeatureprovider):
+
+```swift
+class ThresholdProvider: MLFeatureProvider {
+
+    open var values = [
+        "iouThreshold": MLFeatureValue(double: 0.3),
+        "confidenceThreshold": MLFeatureValue(double: 0.2)
+    ]
+
+    var featureNames: Set<String> {
+        return Set(values.keys)
+    }
+
+    func featureValue(for featureName: String) -> MLFeatureValue? {
+        return values[featureName]
+    }
+}
+```
+
+After we've specified one or more thresholds, we assign them to the model object and
+make a prediction:
 
 ```swift
 let model = try VNCoreMLModel(for: mlmodel.model)
+
+model.featureProvider = ThresholdProvider()
 
 let request = VNCoreMLRequest(model: model, completionHandler: { [weak self] request, error in
     self?.processClassifications(for: request, error: error)

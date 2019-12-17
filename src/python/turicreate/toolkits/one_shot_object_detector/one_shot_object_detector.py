@@ -12,14 +12,12 @@ from turicreate.toolkits._model import PythonProxy as _PythonProxy
 from turicreate.toolkits.object_detector.object_detector import ObjectDetector as _ObjectDetector
 from turicreate.toolkits.one_shot_object_detector.util._augmentation import preview_synthetic_training_data as _preview_synthetic_training_data
 import turicreate.toolkits._internal_utils as _tkutl
+from turicreate.toolkits import _coreml_utils
+
+USE_CPP = _tkutl._read_env_var_cpp('TURI_OD_USE_CPP_PATH')
 
 
-def create(data,
-           target,
-           backgrounds=None,
-           batch_size=0,
-           max_iterations=0,
-           verbose=True):
+def create(data, target, backgrounds=None, batch_size=0, max_iterations=0, verbose=True):
     """
     Create a :class:`OneShotObjectDetector` model. Note: The One Shot Object Detector
     is currently in beta.
@@ -62,11 +60,12 @@ def create(data,
     """
     if not isinstance(data, _tc.SFrame) and not isinstance(data, _tc.Image):
         raise TypeError("'data' must be of type SFrame or Image.")
-    augmented_data = _preview_synthetic_training_data(data, target, backgrounds)
-    model = _tc.object_detector.create( augmented_data,
-                                        batch_size=batch_size,
-                                        max_iterations=max_iterations,
-                                        verbose=verbose)
+    augmented_data = _preview_synthetic_training_data(
+        data, target, backgrounds)
+    model = _tc.object_detector.create(augmented_data,
+                                       batch_size=batch_size,
+                                       max_iterations=max_iterations,
+                                       verbose=verbose)
     if isinstance(data, _tc.SFrame):
         num_starter_images = len(data)
     else:
@@ -76,11 +75,12 @@ def create(data,
         "target": target,
         "num_classes": model.num_classes,
         "num_starter_images": num_starter_images,
-        "_detector_version": _ObjectDetector._PYTHON_OBJECT_DETECTOR_VERSION,
-        }
+        "_detector_version": _ObjectDetector._CPP_OBJECT_DETECTOR_VERSION,
+    }
     return OneShotObjectDetector(state)
 
-class OneShotObjectDetector(_CustomModel): 
+
+class OneShotObjectDetector(_CustomModel):
     """
     An trained model that is ready to use for classification, exported to
     Core ML, or for feature extraction.
@@ -93,7 +93,7 @@ class OneShotObjectDetector(_CustomModel):
         # We use PythonProxy here so that we get tab completion
         self.__proxy__ = _PythonProxy(state)
 
-    def predict(self, dataset, confidence_threshold=0.25, iou_threshold=None, verbose=True):
+    def predict(self, dataset, confidence_threshold=0.25, iou_threshold=0.45, verbose=True):
         """
         Predict object instances in an SFrame of images.
 
@@ -143,13 +143,13 @@ class OneShotObjectDetector(_CustomModel):
             >>> predictions_with_bounding_boxes.explore()
 
         """
-        return self.__proxy__['detector'].predict(dataset=dataset,
-            confidence_threshold=confidence_threshold, iou_threshold=iou_threshold, verbose=verbose)
+        return self.__proxy__['detector'].predict(
+            dataset=dataset,
+            confidence_threshold=confidence_threshold,
+            iou_threshold=iou_threshold,
+            verbose=verbose)
 
-    def export_coreml(self, filename,
-            include_non_maximum_suppression = True,
-            iou_threshold = None,
-            confidence_threshold = None):
+    def export_coreml(self, filename, include_non_maximum_suppression=True, iou_threshold=None, confidence_threshold=None):
         """
         Save the model in Core ML format. The Core ML model takes an image of
         fixed size as input and produces two output arrays: `confidence` and
@@ -208,11 +208,34 @@ class OneShotObjectDetector(_CustomModel):
         --------
         >>> model.export_coreml('one_shot.mlmodel')
         """
-        from coremltools.models.utils import save_spec as _save_spec
-        model = self.__proxy__['detector']._create_coreml_model(include_non_maximum_suppression=include_non_maximum_suppression, iou_threshold=iou_threshold, confidence_threshold=confidence_threshold)
-        model.description.metadata.shortDescription = 'One Shot ' + model.description.metadata.shortDescription
-        model.description.metadata.userDefined["type"] = 'OneShotObjectDetector'
-        _save_spec(model, filename)
+        import coremltools
+        additional_user_defined_metadata = _coreml_utils._get_tc_version_info()
+        short_description = _coreml_utils._mlmodel_short_description('Object Detector')
+        if USE_CPP:
+            options = {
+                    'include_non_maximum_suppression': include_non_maximum_suppression,
+            }
+
+            options['version'] = self._PYTHON_ONE_SHOT_OBJECT_DETECTOR_VERSION
+
+            if confidence_threshold is not None:
+                options['confidence_threshold'] = confidence_threshold
+
+            if iou_threshold is not None:
+                options['iou_threshold'] = iou_threshold
+
+            additional_user_defined_metadata = _coreml_utils._get_tc_version_info()
+            short_description = _coreml_utils._mlmodel_short_description('One Shot Object Detector')
+            self.__proxy__['detector'].__proxy__.export_to_coreml(filename,
+                short_description, additional_user_defined_metadata, options)
+        else:
+            from coremltools.models.utils import save_spec as _save_spec
+            model = self.__proxy__['detector']._create_coreml_model(
+                include_non_maximum_suppression=include_non_maximum_suppression,
+                iou_threshold=iou_threshold,
+                confidence_threshold=confidence_threshold)
+            model.description.metadata.shortDescription = short_description
+            _save_spec(model, filename)
 
     def _get_version(self):
         return self._PYTHON_ONE_SHOT_OBJECT_DETECTOR_VERSION
@@ -228,7 +251,10 @@ class OneShotObjectDetector(_CustomModel):
 
         # We don't know how to serialize a Python class, hence we need to
         # reduce the detector to the proxy object before saving it.
-        state['detector'] = state['detector']._get_native_state()
+        if USE_CPP:
+            state['detector'] = {'detector_model':state['detector'].__proxy__}
+        else:
+            state['detector'] = state['detector']._get_native_state()
         return state
 
     @classmethod
@@ -256,11 +282,18 @@ class OneShotObjectDetector(_CustomModel):
         Print a string description of the model when the model name is entered
         in the terminal.
         """
+        if USE_CPP:
+            return self.__class__.__name__
+
         width = 40
         sections, section_titles = self._get_summary_struct()
         detector = self.__proxy__['detector']
-        out = _tkutl._toolkit_repr_print(detector, sections, section_titles,
-                                         width=width, class_name='OneShotObjectDetector')
+        out = _tkutl._toolkit_repr_print(
+            detector,
+            sections,
+            section_titles,
+            width=width,
+            class_name='OneShotObjectDetector')
         return out
 
     def _get_summary_struct(self):
@@ -295,5 +328,8 @@ class OneShotObjectDetector(_CustomModel):
             ('Final loss (specific to model)', 'training_loss'),
         ]
 
-        section_titles = ['Model summary', 'Synthetic data summary', 'Training summary']
+        section_titles = [
+            'Model summary',
+            'Synthetic data summary',
+            'Training summary']
         return([model_fields, data_fields, training_fields], section_titles)
