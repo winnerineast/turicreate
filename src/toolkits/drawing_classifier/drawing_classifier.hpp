@@ -68,7 +68,7 @@ class EXPORT drawing_classifier : public ml_model_base {
                              variant_type validation_data,
                              std::map<std::string, flexible_type> opts);
 
-  virtual void iterate_training();
+  virtual void iterate_training(bool show_loss);
 
   BEGIN_CLASS_MEMBER_REGISTRATION("drawing_classifier")
 
@@ -258,10 +258,10 @@ class EXPORT drawing_classifier : public ml_model_base {
   virtual std::tuple<gl_sframe, gl_sframe> init_data(
       gl_sframe data, variant_type validation_data) const;
 
-  virtual float compute_validation_metrics(size_t num_classes,
-                                           size_t batch_size);
+  virtual std::tuple<float, float> compute_validation_metrics(
+      size_t num_classes, size_t batch_size);
 
-  virtual void init_table_printer(bool has_validation);
+  virtual void init_table_printer(bool has_validation, bool show_loss);
 
   template <typename T>
   T read_state(const std::string& key) const {
@@ -286,15 +286,16 @@ class EXPORT drawing_classifier : public ml_model_base {
   }
 
   gl_sframe perform_inference(data_iterator* data) const;
+  gl_sarray get_predictions_class(const gl_sarray& predictions_prob,
+                                  const flex_list& class_labels);
 
  private:
   /**
    * by design, this is NOT virtual;
    * this calls the virtual create_iterator(parameters) in the end.
    **/
-   std::unique_ptr<data_iterator> create_iterator(
-      gl_sframe data, bool is_train,
-      flex_list class_labels) const;
+  std::unique_ptr<data_iterator> create_iterator(gl_sframe data, bool is_train,
+                                                 flex_list class_labels) const;
 
   // Primary representation for the trained model.
   std::unique_ptr<neural_net::model_spec> nn_spec_;

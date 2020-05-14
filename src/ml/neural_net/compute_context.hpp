@@ -16,6 +16,36 @@
 namespace turi {
 namespace neural_net {
 
+/** A struct to define all the parameters used to create the activity classifier
+ * model backend
+ */
+struct ac_parameters {
+  /** Defines the batch size */
+  int batch_size;
+
+  /** Defines the number of features in the data */
+  int num_features;
+
+  /** Each group of this many consecutive samples from the same session are
+   * assumed to have the same class label.
+   */
+  int prediction_window;
+
+  /** Defines the number of classes */
+  int num_classes;
+
+  /** Each session is segmented into chunks of this many prediction windows. */
+  int num_predictions_per_chunk;
+
+  /** Setting random seed makes results reproducible. */
+  int random_seed;
+
+  /**  Set to true, when the data is used for training. */
+  bool is_training;
+
+  /** Defines the weights of the network */
+  float_array_map weights;
+};
 /**
  * Interface for factories that produce concrete data augmentation and neural
  * network module instances, used to abstract across backend implementations and
@@ -68,10 +98,9 @@ EXPORT class compute_context {
   virtual ~compute_context();
 
   /**
-   * Returns the (human readable) names of the GPUs used by this context, for
-   * reporting to the user.
+   * Prints (human readable) device information.
    */
-  virtual std::vector<std::string> gpu_names() const = 0;
+  virtual void print_training_device_info() const = 0;
 
   /**
    * Provides a measure of the memory resources available.
@@ -102,9 +131,9 @@ EXPORT class compute_context {
    *       weights as a float_array_map.
    */
   virtual std::unique_ptr<model_backend> create_activity_classifier(
-      int n, int c_in, int h_in, int w_in, int c_out, int h_out, int w_out,
-      const float_array_map& config, const float_array_map& weights) { ASSERT_TRUE(false); }
-
+      const ac_parameters& ac_params) {
+    ASSERT_TRUE(false);
+  }
 
   /**
    * Creates a style transfer network
@@ -128,8 +157,9 @@ EXPORT class compute_context {
    */
   virtual std::unique_ptr<model_backend> create_drawing_classifier(
       /* TODO: const float_array_map& config if needed */
-      const float_array_map& weights,
-      size_t batch_size, size_t num_classes) { ASSERT_TRUE(false); }
+      const float_array_map& weights, size_t batch_size, size_t num_classes) {
+    ASSERT_TRUE(false);
+  }
 
   /**
    * Creates an image augmenter.

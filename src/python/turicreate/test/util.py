@@ -14,13 +14,22 @@ import string
 import numpy as np
 from pandas.util.testing import assert_frame_equal
 from .. import SArray
+import turicreate as tc
+import sys
+from six import StringIO
 
-class SFrameComparer():
+import pytest
+
+pytestmark = pytest.mark.minimal
+
+
+class SFrameComparer:
     """
     Helper class for comparing sframe and sarrays
 
     Adapted from test_sframe.py
     """
+
     def _assert_sgraph_equal(self, sg1, sg2):
         self._assert_sframe_equal(sg1.vertices, sg2.vertices)
         self._assert_sframe_equal(sg1.edges, sg2.edges)
@@ -47,12 +56,13 @@ class SFrameComparer():
                         assert key in v1
                         assert v1[key] == v2[key]
 
-                elif (hasattr(v1, "__iter__")):
+                elif hasattr(v1, "__iter__"):
                     assert len(v1) == len(v2)
                     for j in range(len(v1)):
-                        t1 = v1[j]; t2 = v2[j]
-                        if (type(t1) == float):
-                            if (math.isnan(t1)):
+                        t1 = v1[j]
+                        t2 = v2[j]
+                        if type(t1) == float:
+                            if math.isnan(t1):
                                 assert math.isnan(t2)
                             else:
                                 assert t1 == t2
@@ -61,12 +71,14 @@ class SFrameComparer():
                 else:
                     assert v1 == v2
 
-class SubstringMatcher():
+
+class SubstringMatcher:
     """
     Helper class for testing substring matching
 
     Code adapted from http://www.michaelpollmeier.com/python-mock-how-to-assert-a-substring-of-logger-output/
     """
+
     def __init__(self, containing):
         self.containing = containing.lower()
 
@@ -77,21 +89,26 @@ class SubstringMatcher():
         return 'a string containing "%s"' % self.containing
 
     def __str__(self):
-        return unicode(self).encode('utf-8')
+        return unicode(self).encode("utf-8")
+
     __repr__ = __unicode__
 
-class TempDirectory():
+
+class TempDirectory:
     name = None
+
     def __init__(self):
         self.name = tempfile.mkdtemp()
+
     def __enter__(self):
         return self.name
+
     def __exit__(self, type, value, traceback):
         if self.name is not None:
             shutil.rmtree(self.name)
 
 
-def uniform_string_column(n, word_length, alphabet_size, missingness=0.):
+def uniform_string_column(n, word_length, alphabet_size, missingness=0.0):
     """
     Return an SArray of strings constructed uniformly randomly from the first
     'num_letters' of the lower case alphabet.
@@ -126,12 +143,12 @@ def uniform_string_column(n, word_length, alphabet_size, missingness=0.):
             word = []
             for j in range(word_length):
                 word.append(np.random.choice(letters))
-            result.append(''.join(word))
+            result.append("".join(word))
 
     return SArray(result)
 
 
-def uniform_numeric_column(n, col_type=float, range=(0, 1), missingness=0.):
+def uniform_numeric_column(n, col_type=float, range=(0, 1), missingness=0.0):
     """
     Return an SArray of uniformly random numeric values.
 
@@ -165,3 +182,22 @@ def uniform_numeric_column(n, col_type=float, range=(0, 1), missingness=0.):
     v = np.where(np.isnan(v), None, v)
 
     return SArray(v, dtype=col_type)
+
+
+def assert_longer_verbose_logs(function_call, args, kwargs):
+    # Run command with verbose=False
+    kwargs["verbose"] = False
+    old_stdout = sys.stdout
+    sys.stdout = stdout_without_verbose = StringIO()
+    function_call(*args, **kwargs)
+    sys.stdout = old_stdout
+    without_verbose = stdout_without_verbose.getvalue()
+    # Run command with verbose=True
+    kwargs["verbose"] = True
+    old_stdout = sys.stdout
+    sys.stdout = stdout_with_verbose = StringIO()
+    function_call(*args, **kwargs)
+    sys.stdout = old_stdout
+    with_verbose = stdout_with_verbose.getvalue()
+    # Assert that verbose logs are longer
+    assert len(with_verbose) > len(without_verbose)

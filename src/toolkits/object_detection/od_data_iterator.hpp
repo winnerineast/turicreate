@@ -102,6 +102,9 @@ public:
     /** Whether to shuffle the data on subsequent traversals. */
     bool shuffle = true;
 
+    /** Whether the process is in training or not. */
+    bool is_training = false;
+
     /** Determines results of shuffle operations if enabled. */
     int random_seed = 0;
   };
@@ -121,6 +124,9 @@ public:
    */
   virtual std::vector<neural_net::labeled_image>
       next_batch(size_t batch_size) = 0;
+
+  /** Returns true when `next_batch` will return a non-empty value. */
+  virtual bool has_next_batch() const = 0;
 
   /**
    * Returns a sorted list of the unique "label" values found in the
@@ -152,6 +158,12 @@ public:
 
   std::vector<neural_net::labeled_image> next_batch(size_t batch_size) override;
 
+  bool has_next_batch() const override {
+    // TODO: gl_sframe_range::end() should be a const method.
+    gl_sframe_range range_iterator(range_iterator_);
+    return next_row_ != range_iterator.end();
+  }
+
   const std::vector<std::string>& class_labels() const override {
     return annotation_properties_.classes;
   }
@@ -182,6 +194,7 @@ private:
 
   const bool repeat_;
   const bool shuffle_;
+  const bool is_training_;
 
   const annotation_properties annotation_properties_;
 

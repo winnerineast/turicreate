@@ -11,17 +11,18 @@ cache:
 build_wheel_debug_linux_python27:
   tags:
     - docker
+  image: docker:19.03.8
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03.8-dind
   stage: build
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   script:
     - apk add bash nodejs
     - mkdir -p /etc/ssl/certs/
-    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --debug --docker-python2.7 --skip_doc
+    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --debug --docker-python2.7
   artifacts:
     expire_in: 1 day
     paths:
@@ -31,12 +32,13 @@ build_wheel_linux_python27:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03.8-dind
+  image: docker:19.03.8
   stage: build
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   script:
     - apk add bash nodejs
     - mkdir -p /etc/ssl/certs/
@@ -50,16 +52,17 @@ build_wheel_linux_python35:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03.8-dind
+  image: docker:19.03.8
   stage: build
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   script:
     - apk add bash nodejs
     - mkdir -p /etc/ssl/certs/
-    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --docker-python3.5 --skip_doc
+    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --docker-python3.5
   artifacts:
     expire_in: 1 day
     paths:
@@ -69,16 +72,17 @@ build_wheel_linux_python36:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: build
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   script:
     - apk add bash nodejs
     - mkdir -p /etc/ssl/certs/
-    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --docker-python3.6 --skip_doc
+    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --docker-python3.6
   artifacts:
     expire_in: 1 day
     paths:
@@ -88,16 +92,17 @@ build_wheel_linux_python37:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: build
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   script:
     - apk add bash
     - mkdir -p /etc/ssl/certs/
-    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --docker-python3.7 --skip_doc
+    - bash -e scripts/make_wheel.sh --skip_test --skip_cpp_test --build_number=$CI_PIPELINE_ID --num_procs=4 --docker-python3.7
   artifacts:
     expire_in: 1 day
     paths:
@@ -167,15 +172,16 @@ build_wheel_mac_10_15_python37:
     paths:
       - target/
 
-build_dylib_macos_10_14:
+build_dylib_macos_10_15:
   tags:
-    - macos10.14
+    - macos10.15
   only:
     variables:
       - $TC_HAS_MACOS_RUNNERS == "1"
   stage: build
   script:
-    - ./configure --no-visualization --no-python --no-remotefs --release-opt-for-size --with-capi --builder=xcode
+    - ./configure --no-visualization --no-python --no-remotefs
+      --release-opt-for-size --with-capi --builder=xcode --no-pre-commit
     - cd release
     - xcodebuild -j 8 -project Turi.xcodeproj/ -target Recommender -quiet
     - xcodebuild -j 8 -project Turi.xcodeproj/ -target AudioPreprocessing -quiet
@@ -187,13 +193,15 @@ build_dylib_macos_10_14:
 
 build_dylib_ios_12:
   tags:
-    - macos10.14
+    - macos10.15
   only:
     variables:
       - $TC_HAS_MACOS_RUNNERS == "1"
   stage: build
   script:
-    - ./configure --no-visualization --no-python --no-remotefs --release-opt-for-size --target=iphoneos --arch=arm64 --with-capi --builder=xcode
+    - ./configure --no-visualization --no-python --no-remotefs
+      --release-opt-for-size --target=iphoneos --arch=arm64
+      --with-capi --builder=xcode --no-pre-commit
     - cd release
     - xcodebuild -j 8 -project Turi.xcodeproj/ -target Recommender -arch arm64 only_active_arch=no -quiet
     - xcodebuild -j 8 -project Turi.xcodeproj/ -target AudioPreprocessing -arch arm64 only_active_arch=no -quiet
@@ -203,16 +211,39 @@ build_dylib_ios_12:
       - release/src/deployment/Release-iphoneos/libRecommender.dylib
       - release/src/deployment/Release-iphoneos/libAudioPreprocessing.dylib
 
+build_documentation:
+  tags:
+    - docker
+  services:
+    - docker:19.03-dind
+  image: docker:19.03.8
+  stage: test
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  dependencies:
+    - build_wheel_linux_python37
+  script:
+    - apk add bash
+    - bash scripts/make_documentation.sh --docker
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - target/docs.zip
+
 test_cpp_linux:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python27
   script:
@@ -224,12 +255,13 @@ test_cpp_linux_no_remotefs:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python27
   script:
@@ -249,7 +281,7 @@ test_cpp_mac_10_13:
     - build_wheel_mac_10_15_python27
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-    - (test -d debug && test -d release) || ./configure --no-python
+    - (test -d debug && test -d release) || ./configure --no-python --no-pre-commit
     - cd debug/test
     - bash -c -e -o pipefail "make -k -j8 2>&1 | grep -v -E '^ld[^a-z]*warning[^a-z]*direct access'"
     - python ../../scripts/run_cpp_tests.py -j 2
@@ -265,7 +297,7 @@ test_cpp_mac_10_14:
     - build_wheel_mac_10_15_python27
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-    - (test -d debug && test -d release) || ./configure --no-python
+    - (test -d debug && test -d release) || ./configure --no-python --no-pre-commit
     - cd debug/test
     - bash -c -e -o pipefail "make -k -j8 2>&1 | grep -v -E '^ld[^a-z]*warning[^a-z]*direct access'"
     - python ../../scripts/run_cpp_tests.py -j 2
@@ -281,7 +313,7 @@ test_cpp_mac_10_15:
     - build_wheel_mac_10_15_python27
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-    - (test -d debug && test -d release) || ./configure --no-python
+    - (test -d debug && test -d release) || ./configure --no-python --no-pre-commit
     - cd debug/test
     - bash -c -e -o pipefail "make -k -j8 2>&1 | grep -v -E '^ld[^a-z]*warning[^a-z]*direct access'"
     - python ../../scripts/run_cpp_tests.py -j 2
@@ -297,8 +329,8 @@ test_cpp_mac_10_15_no_remotefs:
     - build_wheel_mac_10_15_python27
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-    - ./configure --no-remotefs --no-python --no-visualization
-    - cd debug/test 
+    - ./configure --no-remotefs --no-python --no-visualization --no-pre-commit
+    - cd debug/test
     - bash -c -e -o pipefail "make -k -j8 2>&1 | grep -v -E '^ld[^a-z]*warning[^a-z]*direct access'"
     - python ../../scripts/run_cpp_tests.py -j 2
 
@@ -306,17 +338,42 @@ test_python_linux_python27:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python27
   script:
     - apk add bash
+    - export TC_ENABLE_S3_TESTS=1
     - bash -e scripts/test_wheel.sh --docker-python2.7
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - pytest.*
+
+test_python_linux_python27_minimal:
+  tags:
+    - docker
+  services:
+    - docker:19.03-dind
+  image: docker:19.03
+  stage: test
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  dependencies:
+    - build_wheel_linux_python27
+  script:
+    - apk add bash
+    - export TC_ENABLE_S3_TESTS=1
+    - bash -e scripts/test_wheel.sh --docker-python2.7 --minimal
   artifacts:
     when: always
     expire_in: 2 weeks
@@ -327,12 +384,13 @@ test_python_linux_python35:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python35
   script:
@@ -348,12 +406,13 @@ test_python_linux_python36:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python36
   script:
@@ -370,12 +429,13 @@ test_python_linux_python37:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python37
   script:
@@ -387,25 +447,23 @@ test_python_linux_python37:
     paths:
       - pytest.*
 
-# This coremltools issues needs to be resolved before we can run on macOS 10.13
-# https://github.com/apple/coremltools/issues/408
-#test_python_mac_python27_10_13:
-#  tags:
-#    - macos10.13
-#  only:
-#    variables:
-#      - $TC_HAS_MACOS_RUNNERS == "1"
-#  stage: test
-#  dependencies:
-#    - build_wheel_mac_10_15_python27
-#  script:
-#    - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-#    - bash scripts/test_wheel.sh
-#  artifacts:
-#    when: always
-#    expire_in: 2 weeks
-#    paths:
-#      - pytest.*
+test_python_mac_python27_10_13:
+  tags:
+    - macos10.13
+  only:
+    variables:
+      - $TC_HAS_MACOS_RUNNERS == "1"
+  stage: test
+  dependencies:
+    - build_wheel_mac_10_15_python27
+  script:
+    - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
+    - bash scripts/test_wheel.sh
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - pytest.*
 
 test_python_mac_python27_10_14:
   tags:
@@ -454,6 +512,7 @@ test_python_mac_python36_10_14:
     - build_wheel_mac_10_15_python36
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/3.6/bin/virtualenv"
+    - export TC_ENABLE_S3_TESTS=1
     - bash -e scripts/test_wheel.sh
   artifacts:
     when: always
@@ -479,72 +538,94 @@ test_python_mac_python37_10_14:
     paths:
       - pytest.*
 
+test_python_mac_python37_10_14_minimal:
+  tags:
+    - macos10.14
+  only:
+    variables:
+      - $TC_HAS_MACOS_RUNNERS == "1"
+  stage: test
+  dependencies:
+    - build_wheel_mac_10_15_python37
+  script:
+    - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/3.7/bin/virtualenv"
+    - bash -e scripts/test_wheel.sh --minimal
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - pytest.*
+
 scenario_tests_linux_python27:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python27
   script:
     - apk add bash
     - cd scenario-tests
-    - ./run_scenario_tests.sh --docker-python2.7 ../target/turicreate-*.whl
+    - ./run_scenario_tests.sh --docker-python2.7 \
+      ../target/turicreate-*+minimal*.whl
 
 scenario_tests_linux_python35:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python35
   script:
     - apk add bash
     - cd scenario-tests
-    - ./run_scenario_tests.sh --docker-python3.5 ../target/turicreate-*.whl
+    - ./run_scenario_tests.sh --docker-python3.5 \
+      ../target/turicreate-*+minimal*.whl
 
 scenario_tests_linux_python36:
   tags:
     - docker
   services:
-    - docker:18.09-dind
-  image: docker:18.09
+    - docker:19.03-dind
+  image: docker:19.03.8
   stage: test
   variables:
-    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_HOST: tcp://docker:2375
     DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
   dependencies:
     - build_wheel_linux_python36
   script:
     - apk add bash
     - cd scenario-tests
-    - ./run_scenario_tests.sh --docker-python3.6 ../target/turicreate-*.whl
+    - ./run_scenario_tests.sh --docker-python3.6 \
+      ../target/turicreate-*+minimal*.whl
 
-# This coremltools issues needs to be resolved before we can run on macOS 10.13
-# https://github.com/apple/coremltools/issues/408
-#scenario_tests_mac_python27_10_13:
-#  tags:
-#    - macos10.13
-#  only:
-#    variables:
-#      - $TC_HAS_MACOS_RUNNERS == "1"
-#  stage: test
-#  dependencies:
-#    - build_wheel_mac_10_15_python27
-#  script:
-#    - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
-#    - cd scenario-tests
-#    - ./run_scenario_tests.sh ../target/turicreate-*.whl
+scenario_tests_mac_python27_10_13:
+  tags:
+    - macos10.13
+  only:
+    variables:
+      - $TC_HAS_MACOS_RUNNERS == "1"
+  stage: test
+  dependencies:
+    - build_wheel_mac_10_15_python27
+  script:
+    - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
+    - cd scenario-tests
+    - ./run_scenario_tests.sh "$(ls -1 ../target/turicreate-*.whl | grep -v minimal)"
 
 scenario_tests_mac_python27_10_14:
   tags:
@@ -558,18 +639,16 @@ scenario_tests_mac_python27_10_14:
   script:
     - export VIRTUALENV="/Library/Frameworks/Python.framework/Versions/2.7/bin/virtualenv"
     - cd scenario-tests
-    - ./run_scenario_tests.sh ../target/turicreate-*.whl
+    - ./run_scenario_tests.sh "$(ls -1 ../target/turicreate-*.whl | grep -v minimal)"
 
 collect_artifacts:
   tags:
     - docker
-  services:
-    - docker:18.09-dind
   image: alpine:latest
   stage: collect_artifacts
   dependencies:
     - build_dylib_ios_12
-    - build_dylib_macos_10_14
+    - build_dylib_macos_10_15
     - build_wheel_linux_python27
     - build_wheel_linux_python35
     - build_wheel_linux_python36
@@ -578,11 +657,11 @@ collect_artifacts:
     - build_wheel_mac_10_15_python35
     - build_wheel_mac_10_15_python36
     - build_wheel_mac_10_15_python37
+    - build_documentation
   script:
-    - mv release/src/deployment/*.dylib target/
+    - find release/src/deployment/ -name '*.dylib' -exec mv {} target/ \;
     - rmdir -p release || find release
   artifacts:
     expire_in: 2 weeks
     paths:
       - target/
-

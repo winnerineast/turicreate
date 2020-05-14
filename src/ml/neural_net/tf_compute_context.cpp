@@ -5,7 +5,9 @@
 */
 #include <ml/neural_net/tf_compute_context.hpp>
 
+#include <cstdint>
 #include <iostream>
+#include <random>
 #include <vector>
 
 #include <core/util/try_finally.hpp>
@@ -202,10 +204,15 @@ class tf_image_augmenter : public float_array_image_augmenter {
       labeled_float_image data_to_augment) override;
  private:
   pybind11::object augmenter_;
-
+  int random_seed_ = 0;
+  int iteration_id_ = 0;
 };
 
-tf_image_augmenter::tf_image_augmenter(const options& opts, pybind11::object augmenter) : float_array_image_augmenter(opts), augmenter_(augmenter) {}
+tf_image_augmenter::tf_image_augmenter(const options& opts,
+                                       pybind11::object augmenter)
+    : float_array_image_augmenter(opts),
+      augmenter_(augmenter),
+      random_seed_(opts.random_seed) {}
 
 float_array_image_augmenter::float_array_result
 tf_image_augmenter::prepare_augmented_images(
@@ -213,10 +220,15 @@ tf_image_augmenter::prepare_augmented_images(
   float_array_image_augmenter::float_array_result image_annotations;
 
   call_pybind_function([&]() {
+    // Use std::seed_seq to hash the iteration index into our random seed. Note
+    // that the result must be unsigned, since numpy requires nonnegative seeds.
+    std::seed_seq seq{random_seed_, ++iteration_id_};
+    std::array<std::uint32_t, 1> random_seed;
+    seq.generate(random_seed.begin(), random_seed.end());
 
     // Get augmented images and annotations from tensorflow
     pybind11::object augmented_data = augmenter_.attr("get_augmented_data")(
-        data_to_augment.images, data_to_augment.annotations);
+        data_to_augment.images, data_to_augment.annotations, random_seed[0]);
     std::pair<pybind11::buffer, std::vector<pybind11::buffer>> aug_data =
         augmented_data
             .cast<std::pair<pybind11::buffer, std::vector<pybind11::buffer>>>();
@@ -259,7 +271,8 @@ std::unique_ptr<compute_context> create_tf_compute_context() {
 
 // At static-init time, register create_tf_compute_context().
 // TODO: Codify priority levels?
-static auto* tf_registration = new compute_context::registration(
+static auto* tf_registration __attribute__((unused)) =
+  new compute_context::registration(
     /* priority */ 1, &create_tf_compute_context, &create_tf_compute_context);
 
 }  // namespace
@@ -279,18 +292,21 @@ size_t tf_compute_context::memory_budget() const {
   return 4294967296lu;
 }
 
-std::vector<std::string> tf_compute_context::gpu_names() const {
-  std::vector<std::string> gpu_device_names;
+void tf_compute_context::print_training_device_info() const {
+  bool has_gpu;
 
   call_pybind_function([&]() {
-    pybind11::module tf_gpu_devices =
+      pybind11::module tf_gpu_devices =
         pybind11::module::import("turicreate.toolkits._tf_utils");
-    // Get the names from tf utilities function
-    pybind11::object gpu_devices = tf_gpu_devices.attr("get_gpu_names")();
-    gpu_device_names = gpu_devices.cast<std::vector<std::string>>();
-  });
+      pybind11::object resp = tf_gpu_devices.attr("is_gpu_available")();
+      has_gpu = resp.cast<bool>();
+    });
 
-  return gpu_device_names;
+  if (!has_gpu) {
+    logprogress_stream << "Using CPU to create model.";
+  } else {
+    logprogress_stream << "Using a GPU to create model.";
+  }
 }
 
 
@@ -311,22 +327,21 @@ std::unique_ptr<model_backend> tf_compute_context::create_object_detector(
 }
 
 std::unique_ptr<model_backend> tf_compute_context::create_activity_classifier(
-    int n, int c_in, int h_in, int w_in, int c_out, int h_out, int w_out,
-    const float_array_map& config, const float_array_map& weights) {
-  shared_float_array prediction_window = config.at("ac_pred_window");
-  const float* pred_window = prediction_window.data();
-  int pw = static_cast<int>(*pred_window);
-
+    const ac_parameters& ac_params) {
   std::unique_ptr<tf_model_backend> result;
   call_pybind_function([&]() {
     pybind11::module tf_ac_backend = pybind11::module::import(
         "turicreate.toolkits.activity_classifier._tf_model_architecture");
 
     // Make an instance of python object
-    pybind11::object activity_classifier = tf_ac_backend.attr(
-        "ActivityTensorFlowModel")(weights, n, c_in, c_out, pw, w_out);
+    pybind11::object activity_classifier =
+        tf_ac_backend.attr("ActivityTensorFlowModel")(
+            ac_params.weights, ac_params.batch_size, ac_params.num_features,
+            ac_params.num_classes, ac_params.prediction_window,
+            ac_params.num_predictions_per_chunk, ac_params.random_seed);
     result.reset(new tf_model_backend(activity_classifier));
   });
+
   return result;
 }
 
@@ -376,8 +391,7 @@ std::unique_ptr<model_backend> tf_compute_context::create_style_transfer(
  * TODO: Add proper arguments to create_drawing_classifier
  */
 std::unique_ptr<model_backend> tf_compute_context::create_drawing_classifier(
-    const float_array_map& weights,
-    size_t batch_size, size_t num_classes) {
+    const float_array_map& weights, size_t batch_size, size_t num_classes) {
   std::unique_ptr<tf_model_backend> result;
   call_pybind_function([&]() {
     pybind11::module tf_dc_backend = pybind11::module::import(

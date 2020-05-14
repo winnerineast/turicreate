@@ -15,11 +15,12 @@ if(NOT TC_DISABLE_OBJECT_BUILDS)
   "$<TARGET_OBJECTS:python_callbacks>"
   )
   
-  if(APPLE AND HAS_MLCUSTOMMODEL)
+if(APPLE AND HAS_COREML_CUSTOM_MODEL)
     set(unity_shared_object_deps
       ${unity_shared_object_deps}
-      "$<TARGET_OBJECTS:objcapi>")
-  endif()
+      "$<TARGET_OBJECTS:objcapi>"
+      "$<TARGET_OBJECTS:capi>")
+endif()
 
 else()
   set(unity_shared_deps 

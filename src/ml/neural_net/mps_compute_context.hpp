@@ -30,7 +30,7 @@ class mps_compute_context: public compute_context {
 
   ~mps_compute_context();
 
-  std::vector<std::string> gpu_names() const override;
+  void print_training_device_info() const override;
   size_t memory_budget() const override;
 
   std::unique_ptr<model_backend> create_object_detector(
@@ -38,8 +38,7 @@ class mps_compute_context: public compute_context {
       const float_array_map& config, const float_array_map& weights) override;
 
   std::unique_ptr<model_backend> create_activity_classifier(
-      int n, int c_in, int h_in, int w_in, int c_out, int h_out, int w_out,
-      const float_array_map& config, const float_array_map& weights) override;
+      const ac_parameters& ac_params) override;
 
   static bool has_style_transfer();
 
@@ -48,8 +47,8 @@ class mps_compute_context: public compute_context {
 
   std::unique_ptr<model_backend> create_drawing_classifier(
       /* TODO: const float_array_map& config if needed */
-      const float_array_map& weights,
-      size_t batch_size, size_t num_classes) override;
+      const float_array_map& weights, size_t batch_size,
+      size_t num_classes) override;
 
   std::unique_ptr<image_augmenter> create_image_augmenter(
       const image_augmenter::options &opts) override;
@@ -63,8 +62,7 @@ class mps_compute_context: public compute_context {
       std::function<float(float lower, float upper)> rng);
 
  private:
-
-  std::unique_ptr<mps_command_queue> command_queue_;
+  std::shared_ptr<mps_command_queue> command_queue_;
 };
 
 }  // namespace neural_net
